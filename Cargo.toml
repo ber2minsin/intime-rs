@@ -1,0 +1,13 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/intime-core",
+    "crates/intime-daemon",
+    "crates/intime-platform",
+    "crates/intime-storage",
+    "crates/intime-ai",
+    "crates/intime-migrate",
+    "crates/intime-app/src-tauri"
+]
+
+default-members = ["crates/intime-daemon"]
