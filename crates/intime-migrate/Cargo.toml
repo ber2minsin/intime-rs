@@ -1,0 +1,22 @@
+[package]
+name = "intime-migrate"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "migrate"
+path = "src/main.rs"
+
+[dependencies]
+sqlx = { version = "0.8.6", features = [
+    "runtime-tokio-native-tls",
+    "sqlite",
+    "migrate",
+    "chrono",
+] }
+sqlite-vec = "0.1.9"
+libsqlite3-sys = "0.30.1" # Match sqlx version
+tokio = { version = "1.52.1", features = ["full"] }
+anyhow = "1.0.102"
+dotenv = "0.15.0"
+
