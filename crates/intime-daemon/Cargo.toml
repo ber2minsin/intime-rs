@@ -1,0 +1,20 @@
+[package]
+name = "intime-daemon"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tokio = { version = "1.52.1", features = ["full"] }
+intime-core = { path = "../intime-core" }
+intime-platform = { path = "../intime-platform" }
+intime-storage = { path = "../intime-storage" }
+intime-ai = { path = "../intime-ai" }
+anyhow = "1.0.102"
+dotenvy = "0.15.7"
+tracing = "0.1.44"
+tracing-subscriber = "0.3.23"
+blake3 = "1.8.5"
+
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+serde_json = "1.0.149"
+tracing-appender = "0.2.5"
