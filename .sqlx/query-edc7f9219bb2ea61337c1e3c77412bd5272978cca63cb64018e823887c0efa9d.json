@@ -1,0 +1,32 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT company.id, company.company_name, company.created_at AS \"created_at: DateTime<Utc>\"\n            FROM app \n            JOIN company ON app.company_id = company.id \n            WHERE app.id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Integer"
+      },
+      {
+        "name": "company_name",
+        "ordinal": 1,
+        "type_info": "Text"
+      },
+      {
+        "name": "created_at: DateTime<Utc>",
+        "ordinal": 2,
+        "type_info": "Datetime"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "edc7f9219bb2ea61337c1e3c77412bd5272978cca63cb64018e823887c0efa9d"
+}

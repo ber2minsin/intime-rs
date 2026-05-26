@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO app(fingerprint, product_version, display_name, file_path, first_seen_at, product_name, company_id) VALUES($1, $2, $3, $4, $5, $6, $7)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 7
+    },
+    "nullable": []
+  },
+  "hash": "94fe513ba149d4c81ed4c1adba4e148170a0f6634bca6c60ff74706e11b914b8"
+}
