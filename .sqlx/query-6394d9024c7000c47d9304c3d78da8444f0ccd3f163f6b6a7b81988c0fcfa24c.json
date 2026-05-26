@@ -1,0 +1,20 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO event(event_type, occured_at, payload, app_id, screenshot_path) VALUES (?, ?, ?, ?, ?) RETURNING id",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Integer"
+      }
+    ],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "6394d9024c7000c47d9304c3d78da8444f0ccd3f163f6b6a7b81988c0fcfa24c"
+}
