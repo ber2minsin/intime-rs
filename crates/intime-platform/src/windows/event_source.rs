@@ -22,7 +22,7 @@ pub struct WindowsEventSource {}
 
 impl WindowsEventSource {
     pub fn new() -> Self {
-        // TODO: can be moved to separate start and can be defined in shared trait
+        // TODO can be moved to separate start and can be defined in shared trait
         let _hook_thread = std::thread::spawn(|| unsafe {
             let _ = install_hooks();
         });
@@ -47,7 +47,7 @@ impl EventSource for WindowsEventSource {
             })?;
         }
         
-        // FIFO: push_back on the producer side, pop_front here.
+        // FIFO push_back on the producer, pop_front here
         Ok(guard.pop_front().expect("non-empty after wait"))
     }
 }

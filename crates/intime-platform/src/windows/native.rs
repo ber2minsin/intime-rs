@@ -7,6 +7,7 @@ use intime_core::{
     time::Timestamp,
 };
 use tracing::debug;
+use uiautomation::UIAutomation;
 use windows::Win32::{
     Foundation::{CloseHandle, HWND},
     Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute},
@@ -530,6 +531,37 @@ unsafe fn get_title(hwnd: HWND) -> String {
     let len = unsafe { GetWindowTextW(hwnd, &mut buffer) };
     let title = String::from_utf16_lossy(&buffer[..len as usize]);
     title
+}
+
+fn dump_focused_element() {
+    let automation = match UIAutomation::new() {
+        Ok(a) => a,
+        Err(_) => return,
+    };
+
+    let element = match automation.get_focused_element() {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+
+    let name = element.get_name().unwrap_or_default();
+
+    let class_name = element.get_classname().unwrap_or_default();
+
+    let automation_id = element.get_automation_id().unwrap_or_default();
+
+    let control_type = element
+        .get_control_type()
+        .map(|c| format!("{:?}", c))
+        .unwrap_or_default();
+
+    println!(
+        "Focused element: {} | {} | {} | {}",
+        name,
+        control_type,
+        class_name,
+        automation_id
+    );
 }
 
 pub unsafe fn install_hooks() {

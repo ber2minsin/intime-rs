@@ -33,3 +33,4 @@ windows = { version = "0.62.2", features = [
 windows-result = "0.4.1"
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
 tracing = "0.1.44"
+uiautomation = { version = "0.25.0", features = ["event", "process"] }

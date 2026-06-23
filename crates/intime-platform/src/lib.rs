@@ -36,3 +36,19 @@ pub struct CapturedImage {
     pub height: u32,
     pub pixels: Vec<u8>
 }
+
+
+#[cfg(test)]
+mod tests {
+    // Note this useful idiom: importing names from outer (for mod tests) scope.
+    use super::*;
+
+    #[test]
+    #[cfg(test)]
+    pub fn test_hooks() {
+        use crate::windows::ui::install_hooks;
+
+        install_hooks().unwrap();
+        loop {}
+    }
+}
