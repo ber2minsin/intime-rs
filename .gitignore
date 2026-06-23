@@ -5,3 +5,5 @@ target/
 *.db-wal
 data/
 vec0.dll
+
+*.log
