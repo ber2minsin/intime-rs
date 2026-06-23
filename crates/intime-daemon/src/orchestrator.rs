@@ -1,17 +1,16 @@
 use anyhow::Error;
-use blake3::Hash as Blake3Hash;
 use image::ImageFormat;
 use intime_core::time::Timestamp;
 use intime_platform::traits::ScreenshotSource;
 use std::path::PathBuf;
 use tracing::info;
 
-pub struct ScreenshotOrchestrator<T: ScreenshotSource> {
-    source: T,
+pub struct ScreenshotOrchestrator {
+    source: Box<dyn ScreenshotSource>
 }
 
-impl<T: ScreenshotSource> ScreenshotOrchestrator<T> {
-    pub fn new(source: T) -> Self {
+impl ScreenshotOrchestrator {
+    pub fn new(source: Box<dyn ScreenshotSource>) -> Self {
         Self { source }
     }
 

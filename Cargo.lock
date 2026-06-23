@@ -2012,7 +2012,6 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
- "uiautomation",
 ]
 
 [[package]]

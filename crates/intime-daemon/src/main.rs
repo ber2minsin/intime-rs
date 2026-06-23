@@ -1,17 +1,17 @@
 use anyhow::{Context, Result};
 use intime_ai::{
-    embedding::{self, EmbeddingClient, start_piped_server},
+    embedding::{EmbeddingClient, start_piped_server},
     models::{EmbeddingRequest, EmbeddingResponse},
 };
 use intime_core::models::{Event, EventData};
-use intime_platform::{EventSource, EventSourceTrait, create_capture_engine};
+use intime_platform::{create_capture_engine, create_event_source};
 use intime_storage::{config::StorageConfig, storage::Storage};
 use tracing_subscriber::{Layer, Registry, fmt, layer::SubscriberExt, util::SubscriberInitExt as _};
 use std::{
-    env, fs::File, io::{BufRead as _, BufReader, Read, Write}, path::PathBuf, process::Child, sync::Arc
+    env, sync::Arc
 };
 use tokio::sync::broadcast;
-use tracing::{debug, error, info, level_filters::LevelFilter};
+use tracing::{error, info, level_filters::LevelFilter};
 
 use crate::orchestrator::ScreenshotOrchestrator;
 mod orchestrator;
@@ -90,7 +90,8 @@ async fn main() -> Result<()> {
     // Spawn Platform Event Source
     let producer_tx = evttx.clone();
     let platform_handle = tokio::task::spawn_blocking(move || {
-        let mut event_source = EventSource::new();
+
+        let mut event_source = create_event_source().expect("Could not initialize EventSource");
         info!("Platform event polling started (Blocking Thread)");
 
         while let Ok(event) = event_source.poll() {
@@ -115,10 +116,10 @@ async fn main() -> Result<()> {
 }
 
 /// Core logic for handling an event without crashing the thread
-async fn handle_incoming_event<T: intime_platform::traits::ScreenshotSource>(
+async fn handle_incoming_event(
     event: Arc<Event>,
     storage: &Storage,
-    screenshot_orchestrator: &mut ScreenshotOrchestrator<T>,
+    screenshot_orchestrator: &mut ScreenshotOrchestrator,
     embedding_client: &mut EmbeddingClient,
 ) -> Result<()> {
     // handle registration/metadata if AppSeen event
