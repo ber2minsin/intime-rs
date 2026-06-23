@@ -1,4 +1,4 @@
-use std::{str::FromStr, sync::Once};
+use std::sync::Once;
 
 use libsqlite3_sys::sqlite3_auto_extension;
 use sqlite_vec::sqlite3_vec_init;
