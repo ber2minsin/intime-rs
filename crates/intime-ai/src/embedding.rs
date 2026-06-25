@@ -6,6 +6,7 @@ use anyhow::Error;
 
 use crate::models::{EmbeddingRequest, EmbeddingResponse};
 
+
 pub struct EmbeddingClient {
     pub stdin: ChildStdin,
     pub stdout: BufReader<ChildStdout>,
