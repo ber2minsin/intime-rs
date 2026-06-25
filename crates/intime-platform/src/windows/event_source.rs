@@ -50,6 +50,12 @@ impl EventSource for WindowsEventSource {
         // FIFO push_back on the producer, pop_front here
         Ok(guard.pop_front().expect("non-empty after wait"))
     }
+    
+    fn new() -> Self
+    where
+        Self: Sized {
+        WindowsEventSource {  }
+    }
 }
 
 pub(crate) fn push_event(event: Event) {

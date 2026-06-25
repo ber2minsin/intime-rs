@@ -2,7 +2,7 @@ pub mod error;
 pub mod frame_buffer;
 
 pub mod traits;
-pub use traits::EventSource as EventSourceTrait;
+pub use traits::EventSource;
 
 #[cfg(target_os = "windows")]
 mod windows;
@@ -13,13 +13,13 @@ mod linux;
 use crate::{error::PlatformError, traits::ScreenshotSource};
 
 #[cfg(target_os = "windows")]
-pub fn create_event_source() -> Result<Box<dyn EventSourceTrait>, PlatformError> {
+pub fn create_event_source() -> Result<Box<dyn EventSource>, PlatformError> {
     use windows::event_source::WindowsEventSource;
-    Ok(Box::new(EventSource::new()))
+    Ok(Box::new(WindowsEventSource::new()))
 }
 
 #[cfg(target_os = "linux")]
-pub fn create_event_source() -> Result<Box<dyn EventSourceTrait>, PlatformError> {
+pub fn create_event_source() -> Result<Box<dyn EventSource>, PlatformError> {
     todo!()
 }
 
