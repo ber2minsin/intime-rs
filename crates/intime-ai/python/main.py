@@ -94,7 +94,7 @@ def root():
     return StatusResponse(status="ok", model_name=_state.current)
 
 
-@app.post("/embed_image", response_model=EmbeddingResponse)
+@app.post("/embed/image", response_model=EmbeddingResponse)
 async def embed_image_route(image_file: UploadFile = File(...)):
     _state.require_ready()
 
@@ -111,7 +111,7 @@ async def embed_image_route(image_file: UploadFile = File(...)):
     )
 
 
-@app.post("/embed_text", response_model=EmbeddingResponse)
+@app.post("/embed/text", response_model=EmbeddingResponse)
 async def embed_text_route(text: str):
     """POST keeps long/sensitive strings out of server logs."""
     _state.require_ready()
