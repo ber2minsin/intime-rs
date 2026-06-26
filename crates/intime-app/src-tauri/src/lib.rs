@@ -1,7 +1,7 @@
 use std::{env};
 use tokio::sync::Mutex;
 
-use intime_ai::{embedding::{EmbeddingClient, start_piped_server}, models::EmbeddingRequest};
+use intime_ai::{embedding::{EmbeddingServer, EmbeddingService}, models::EmbeddingRequest};
 use intime_storage::{
     config::StorageConfig,
     storage::{Storage},
@@ -12,7 +12,7 @@ use crate::error::AppError;
 mod error;
 
 struct AppState {
-    embedding_server: Mutex<EmbeddingClient>,
+    embedding_server: Mutex<EmbeddingService>,
     storage: Storage
 }
 
@@ -41,7 +41,7 @@ pub fn run() {
         .setup(|app| {
 
             dotenv::dotenv().expect("Failed to load dotenv");
-            let embedding_server = Mutex::new(start_piped_server()?);
+            let embedding_server = Mutex::new(EmbeddingService::new("http://localhost:8000".to_string()));
             let storage_config = StorageConfig {
                 database_file: env::var("DATABASE_FILE").expect("DATABASE_FILE must be set"),
             };

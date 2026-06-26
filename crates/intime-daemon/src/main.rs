@@ -1,17 +1,14 @@
 use anyhow::{Context, Result};
-use intime_ai::{
-    embedding::{EmbeddingClient, start_piped_server},
-    models::{EmbeddingRequest, EmbeddingResponse},
-};
+use intime_ai::{embedding::{EmbeddingServer as _, EmbeddingService}, models::{EmbeddingRequest, EmbeddingResponse}};
 use intime_core::models::{Event, EventData};
 use intime_platform::{create_capture_engine, create_event_source};
 use intime_storage::{config::StorageConfig, storage::Storage};
-use tracing_subscriber::{Layer, Registry, fmt, layer::SubscriberExt, util::SubscriberInitExt as _};
-use std::{
-    env, sync::Arc
-};
+use std::{env, sync::Arc};
 use tokio::sync::broadcast;
 use tracing::{error, info, level_filters::LevelFilter};
+use tracing_subscriber::{
+    Layer, Registry, fmt, layer::SubscriberExt, util::SubscriberInitExt as _,
+};
 
 use crate::orchestrator::ScreenshotOrchestrator;
 mod orchestrator;
@@ -22,10 +19,12 @@ fn setup_tracing() -> tracing_appender::non_blocking::WorkerGuard {
 
     let file_layer = fmt::layer()
         .with_ansi(false)
-        .with_writer(file_writer).with_filter(LevelFilter::INFO);
+        .with_writer(file_writer)
+        .with_filter(LevelFilter::INFO);
 
     let stdout_layer = fmt::layer()
-        .with_writer(std::io::stdout).with_filter(LevelFilter::INFO);
+        .with_writer(std::io::stdout)
+        .with_filter(LevelFilter::INFO);
 
     Registry::default()
         .with(stdout_layer)
@@ -53,6 +52,8 @@ async fn main() -> Result<()> {
         .await
         .context("Failed to connect to storage")?;
 
+    let embedding_server_url = "http://localhost:8000";
+
     let local_set = tokio::task::LocalSet::new();
 
     // Setup Communication Channels
@@ -64,7 +65,7 @@ async fn main() -> Result<()> {
     let mut tracker_rx = evttx.subscribe();
     let tracker_handle = local_set.spawn_local(async move {
         info!("Tracker task started");
-        let mut embedding_server = start_piped_server().expect("Could not start python server");
+        let mut embedding_server = EmbeddingService::new(embedding_server_url.to_string());
         while let Ok(event) = tracker_rx.recv().await {
             if let Err(e) = handle_incoming_event(
                 event,
@@ -90,7 +91,6 @@ async fn main() -> Result<()> {
     // Spawn Platform Event Source
     let producer_tx = evttx.clone();
     let platform_handle = tokio::task::spawn_blocking(move || {
-
         let mut event_source = create_event_source().expect("Could not initialize EventSource");
         info!("Platform event polling started (Blocking Thread)");
 
@@ -120,7 +120,7 @@ async fn handle_incoming_event(
     event: Arc<Event>,
     storage: &Storage,
     screenshot_orchestrator: &mut ScreenshotOrchestrator,
-    embedding_client: &mut EmbeddingClient,
+    embedding_service: &mut EmbeddingService,
 ) -> Result<()> {
     // handle registration/metadata if AppSeen event
     if let EventData::AppSeen {
@@ -163,7 +163,7 @@ async fn handle_incoming_event(
             let req = EmbeddingRequest::Image {
                 image_path: image_path.as_ref().unwrap().to_string(),
             };
-            embedding_response = Some(embedding_client.make_request(req).await?);
+            embedding_response = Some(embedding_service.make_request(req).await?);
 
             info!("Got embedding {:?}", embedding_response);
         }
@@ -177,14 +177,16 @@ async fn handle_incoming_event(
         None
     };
 
-
     let event_id = storage
         .event_repository
         .add_event(event.as_ref(), app_id, image_path)
         .await?;
 
     if let Some(response) = embedding_response {
-        storage.embedding_repository.add_embedding(event_id, response).await?;
+        storage
+            .embedding_repository
+            .add_embedding(event_id, response)
+            .await?;
     }
     Ok(())
 }

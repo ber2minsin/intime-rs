@@ -1,54 +1,65 @@
-use std::{
-    io::{BufRead as _, BufReader, Write as _}, process::{ChildStdin, ChildStdout, Command, Stdio}
-};
-
 use anyhow::Error;
+use reqwest::Url;
 
 use crate::models::{EmbeddingRequest, EmbeddingResponse};
 
-
-pub struct EmbeddingClient {
-    pub stdin: ChildStdin,
-    pub stdout: BufReader<ChildStdout>,
+#[async_trait::async_trait]
+pub trait EmbeddingServer {
+    async fn make_request(&mut self, req: EmbeddingRequest) -> Result<EmbeddingResponse, Error>;
 }
 
-impl EmbeddingClient {
-    pub async fn make_request(&mut self, req: EmbeddingRequest) -> Result<EmbeddingResponse, Error> {
+pub struct EmbeddingService {
+    pub base_url: Url,
+    client: reqwest::Client,
+}
 
-            let req_json = serde_json::to_string(&req)?;
+impl EmbeddingService {
+    const TEXT_ENDPOINT: &'static str = "/embed/text";
+    const IMAGE_ENDPOINT: &'static str = "/embed/image";
 
-            // WRITE
-            writeln!(self.stdin, "{}", req_json)?;
-            self.stdin.flush()?;
-
-            // READ
-            let mut line = String::new();
-            self.stdout.read_line(&mut line)?;
-
-            let resp = serde_json::from_str(&line)?;
-            Ok(resp)
+    pub fn new(base_url: String) -> Self {
+        Self {
+            base_url: Url::parse(&base_url).expect("Wrong url format"),
+            client: reqwest::Client::new(),
+        }
     }
 }
 
-pub fn start_piped_server() -> Result<EmbeddingClient, Error> {
+#[async_trait::async_trait]
+impl EmbeddingServer for EmbeddingService {
+    async fn make_request(&mut self, req: EmbeddingRequest) -> Result<EmbeddingResponse, Error> {
+        match &req {
+            EmbeddingRequest::Text { .. } => {
+                let url = self.base_url.join(Self::TEXT_ENDPOINT)?;
+                let resp = self
+                    .client
+                    .post(url)
+                    .json(&req)
+                    .send()
+                    .await?
+                    .error_for_status()?
+                    .json::<EmbeddingResponse>()
+                    .await?;
 
-    // Drop the "crates/intime-ai/" prefix here
-    let python_location = std::env::var("INTIME_PYTHON_EXE")?;
-    let script_location = std::env::var("EMBEDDING_SCRIPT")?;
+                Ok(resp)
+            }
+            EmbeddingRequest::Image { image_path } => {
+                let url = self.base_url.join(Self::IMAGE_ENDPOINT)?;
 
-    let mut child = Command::new(python_location)
-        .arg(script_location)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()?;
+                let form = reqwest::multipart::Form::new()
+                    .file("image_file", image_path)
+                    .await?;
+                let resp = self
+                    .client
+                    .post(url)
+                    .multipart(form)
+                    .send()
+                    .await?
+                    .json::<EmbeddingResponse>()
+                    .await?;
 
-    let stdin = child.stdin.take().unwrap();
-    let stdout = child.stdout.take().unwrap();
-
-    let client = EmbeddingClient {
-        stdin,
-        stdout: BufReader::new(stdout),
-    };
-
-    Ok(client)
+                Ok(resp)
+            }
+        }
+    }
 }
