@@ -1,5 +1,12 @@
 use serde::{Deserialize, Serialize};
 
+
+#[derive(Debug)]
+pub struct EmbeddingTask {
+    pub event_id: i64,
+    pub req: EmbeddingRequest,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum EmbeddingType {
@@ -7,7 +14,7 @@ pub enum EmbeddingType {
     Image,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum EmbeddingRequest {
     Text { text: String },
@@ -23,9 +30,7 @@ pub struct EmbeddingResponse {
 
 // Convert Vec<f32> <-> raw little-endian bytes for sqlite-vec
 pub fn vec_to_blob(v: &[f32]) -> Vec<u8> {
-    v.iter()
-        .flat_map(|f| f.to_le_bytes())
-        .collect()
+    v.iter().flat_map(|f| f.to_le_bytes()).collect()
 }
 
 pub fn blob_to_vec(b: &[u8]) -> Vec<f32> {
@@ -33,3 +38,6 @@ pub fn blob_to_vec(b: &[u8]) -> Vec<f32> {
         .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
         .collect()
 }
+
+
+

@@ -1,17 +1,18 @@
 use anyhow::{Context, Result};
-use intime_ai::{embedding::{EmbeddingServer as _, EmbeddingService}, models::{EmbeddingRequest, EmbeddingResponse}};
-use intime_core::models::{Event, EventData};
+use intime_ai::{embedding::EmbeddingService, models::EmbeddingTask};
+use intime_core::models::Event;
 use intime_platform::{create_capture_engine, create_event_source};
 use intime_storage::{config::StorageConfig, storage::Storage};
 use std::{env, sync::Arc};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, mpsc};
 use tracing::{error, info, level_filters::LevelFilter};
 use tracing_subscriber::{
     Layer, Registry, fmt, layer::SubscriberExt, util::SubscriberInitExt as _,
 };
 
-use crate::orchestrator::ScreenshotOrchestrator;
+use crate::{orchestrator::ScreenshotOrchestrator, pipeline::{handle_incoming_event, start_embedding_worker}};
 mod orchestrator;
+mod pipeline;
 
 fn setup_tracing() -> tracing_appender::non_blocking::WorkerGuard {
     let file_appender = tracing_appender::rolling::never(".", "intime-daemon.log");
@@ -59,19 +60,20 @@ async fn main() -> Result<()> {
     // Setup Communication Channels
     let (evttx, _) = broadcast::channel::<Arc<Event>>(1024);
 
+    let (embedtx, mut embedrx) = mpsc::channel::<EmbeddingTask>(64);
+
     // Spawn Tracker Task (Data Persistence)
     // 2. Spawn Tracker Task using local_set.spawn_local instead of tokio::spawn
     let tracker_storage = storage.clone();
     let mut tracker_rx = evttx.subscribe();
     let tracker_handle = local_set.spawn_local(async move {
         info!("Tracker task started");
-        let mut embedding_server = EmbeddingService::new(embedding_server_url.to_string());
         while let Ok(event) = tracker_rx.recv().await {
             if let Err(e) = handle_incoming_event(
                 event,
                 &tracker_storage,
                 &mut screenshot_orchestrator,
-                &mut embedding_server,
+                embedtx.clone(),
             )
             .await
             {
@@ -80,6 +82,11 @@ async fn main() -> Result<()> {
         }
     });
 
+    let embedding_storage = storage.clone();
+    let mut embedding_service = EmbeddingService::new(embedding_server_url.to_string());
+    let embedding_handle = tokio::spawn(async move {
+       start_embedding_worker(&mut embedrx, &mut embedding_service, &embedding_storage).await.unwrap();
+    });
     // Spawn Display Task (This one can stay standard)
     let mut display_rx = evttx.subscribe();
     let display_handle = tokio::spawn(async move {
@@ -106,8 +113,8 @@ async fn main() -> Result<()> {
         Ok(())
     });
 
-    let (platform_result, _, _) = local_set
-        .run_until(async move { tokio::try_join!(platform_handle, tracker_handle, display_handle) })
+    let (platform_result, _, _, _) = local_set
+        .run_until(async move { tokio::try_join!(platform_handle, tracker_handle, display_handle, embedding_handle) })
         .await?; // 1. Clears the JoinError (checks if tasks crashed)
 
     platform_result.context("Platform event loop encountered a critical error")?;
@@ -115,78 +122,3 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Core logic for handling an event without crashing the thread
-async fn handle_incoming_event(
-    event: Arc<Event>,
-    storage: &Storage,
-    screenshot_orchestrator: &mut ScreenshotOrchestrator,
-    embedding_service: &mut EmbeddingService,
-) -> Result<()> {
-    // handle registration/metadata if AppSeen event
-    if let EventData::AppSeen {
-        fingerprint,
-        details,
-        ..
-    } = &event.data
-    {
-        // get company
-        let mut company_id = None;
-        if let Some(name) = details.company() {
-            company_id = match storage.app_repository.seen_company(&name).await {
-                Ok(id) => Some(id),
-                Err(_) => Some(storage.app_repository.add_company(&name).await?),
-            };
-        }
-
-        // get app
-        if !storage.app_repository.seen_app(*fingerprint).await? {
-            storage
-                .app_repository
-                .add_app(*fingerprint, details, company_id)
-                .await?;
-            info!("Registered new app: {}", details.display_name());
-        }
-    }
-    // 2. UNIFIED SCREENSHOT TRIGGER
-    // Executes on ANY event that yields both a fingerprint and an active window handle
-    // --- Screenshot + embedding pipeline ---
-    let mut embedding_response: Option<EmbeddingResponse> = None;
-    let mut image_path: Option<String> = None;
-    match &event.as_ref().data {
-        EventData::WindowFocus { window_handle, .. }
-        | EventData::TitleChange { window_handle, .. } => {
-            image_path = match screenshot_orchestrator.process(*window_handle) {
-                Ok(p) => Some(p.to_string_lossy().into_owned()),
-                Err(_) => return Ok(()),
-            };
-
-            let req = EmbeddingRequest::Image {
-                image_path: image_path.as_ref().unwrap().to_string(),
-            };
-            embedding_response = Some(embedding_service.make_request(req).await?);
-
-            info!("Got embedding {:?}", embedding_response);
-        }
-        _ => {}
-    };
-
-    // Now, extract the ID and add the event to the timeline
-    let app_id = if let Some(fp) = event.data.fingerprint() {
-        storage.app_repository.get_app_id(fp).await.ok()
-    } else {
-        None
-    };
-
-    let event_id = storage
-        .event_repository
-        .add_event(event.as_ref(), app_id, image_path)
-        .await?;
-
-    if let Some(response) = embedding_response {
-        storage
-            .embedding_repository
-            .add_embedding(event_id, response)
-            .await?;
-    }
-    Ok(())
-}
