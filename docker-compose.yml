@@ -1,0 +1,8 @@
+services:
+  intime-ai:
+    build:
+      context: ./crates/intime-ai/python
+      dockerfile: Dockerfile
+    ports:
+      - "8000:80"
+
