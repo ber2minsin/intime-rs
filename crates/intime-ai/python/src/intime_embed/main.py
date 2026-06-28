@@ -5,8 +5,8 @@ from io import BytesIO
 
 from fastapi import FastAPI, File, HTTPException, UploadFile, status
 
-import embedding
-from models import (
+import intime_embed.embedding as embedding
+from intime_embed.models import (
     BackendResponse,
     CLIPModel,
     DEFAULT_MODEL,
