@@ -1,0 +1,35 @@
+{
+  "name": "mail_compose",
+  "description": "User opens mail, focuses compose, then changes the title while writing. Fixture images are only attached to steps that trigger a capture under the 0ms coalescing policy used by the runner.",
+  "steps": [
+    {
+      "type": "app_seen",
+      "handle": 99,
+      "title": "Compose",
+      "file_path": "/usr/bin/mail",
+      "company": "MailCorp",
+      "product": "Mail",
+      "fixture": "compose.png"
+    },
+    {
+      "type": "window_focus",
+      "handle": 99,
+      "title": "Compose",
+      "focused_element": "To"
+    },
+    {
+      "type": "title_change",
+      "handle": 99,
+      "new_title": "Writing to Alice",
+      "fixture": "inbox.png"
+    },
+    { "type": "idle_start" }
+  ],
+  "expect": {
+    "min_events": 4,
+    "event_types": ["app_seen", "window_focus", "title_change", "idle_start"],
+    "min_screenshots": 2,
+    "min_embeddings": 2,
+    "company": "MailCorp"
+  }
+}

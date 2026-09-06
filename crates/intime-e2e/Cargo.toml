@@ -1,0 +1,27 @@
+[package]
+name = "intime-e2e"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "Staged environment / scenario-replay end-to-end tests for intime"
+
+[dependencies]
+anyhow = "1.0.102"
+blake3 = "1.8.5"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+intime-ai = { path = "../intime-ai" }
+intime-core = { path = "../intime-core" }
+intime-daemon = { path = "../intime-daemon" }
+intime-platform = { path = "../intime-platform" }
+intime-storage = { path = "../intime-storage" }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+tokio = { version = "1.52.1", features = ["full"] }
+tempfile = "3.23.0"
+reqwest = { version = "0.13.4", features = ["json"] }
+sqlx = { version = "0.8.6", features = ["runtime-tokio-native-tls", "sqlite"] }
+tracing = "0.1.44"
+
+[lib]
+name = "intime_e2e"
+path = "src/lib.rs"

@@ -2195,6 +2195,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "intime-e2e"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "blake3",
+ "image",
+ "intime-ai",
+ "intime-core",
+ "intime-daemon",
+ "intime-platform",
+ "intime-storage",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "intime-migrate"
 version = "0.1.0"
 dependencies = [

@@ -7,6 +7,7 @@ members = [
     "crates/intime-storage",
     "crates/intime-ai",
     "crates/intime-migrate",
+    "crates/intime-e2e",
     "crates/intime-app/src-tauri"
 ]
 
