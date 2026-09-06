@@ -55,6 +55,7 @@ impl EmbeddingServer for EmbeddingService {
                     .multipart(form)
                     .send()
                     .await?
+                    .error_for_status()?
                     .json::<EmbeddingResponse>()
                     .await?;
 

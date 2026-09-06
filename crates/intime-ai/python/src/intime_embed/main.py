@@ -10,6 +10,7 @@ from intime_embed.models import (
     BackendResponse,
     CLIPModel,
     DEFAULT_MODEL,
+    EmbeddingRequestText,
     EmbeddingResponse,
     EmbeddingType,
     StatusResponse,
@@ -112,13 +113,13 @@ async def embed_image_route(image_file: UploadFile = File(...)):
 
 
 @app.post("/embed/text", response_model=EmbeddingResponse)
-async def embed_text_route(text: str):
-    """POST keeps long/sensitive strings out of server logs."""
+async def embed_text_route(req: EmbeddingRequestText):
+    """Accepts the Rust client JSON body: {"type":"text","text":"..."}."""
     _state.require_ready()
 
     loop = asyncio.get_event_loop()
     feat = await loop.run_in_executor(
-        None, embedding.embed_text, text, _state.tokenizer, _state.model,
+        None, embedding.embed_text, req.text, _state.tokenizer, _state.model,
     )
 
     return EmbeddingResponse(

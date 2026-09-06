@@ -60,6 +60,12 @@ class EmbeddingResponse(BaseModel):
     embedding: list[float]
 
 
+class EmbeddingRequestText(BaseModel):
+    """Matches the Rust `EmbeddingRequest::Text` JSON shape."""
+    type: str = "text"
+    text: str
+
+
 class BackendResponse(BaseModel):
     model_name: CLIPModel # pyright: ignore[reportInvalidTypeForm]
 
