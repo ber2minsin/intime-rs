@@ -23,3 +23,35 @@ impl FrameBuffer {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn allocates_bgra_buffer() {
+        let fb = FrameBuffer::new(2, 3);
+        assert_eq!(fb.width, 2);
+        assert_eq!(fb.height, 3);
+        assert_eq!(fb.data.len(), 2 * 3 * 4);
+        assert!(fb.data.iter().all(|b| *b == 0));
+    }
+
+    #[test]
+    fn ensure_size_is_noop_when_unchanged() {
+        let mut fb = FrameBuffer::new(4, 4);
+        let ptr = fb.data.as_ptr();
+        fb.ensure_size(4, 4);
+        assert_eq!(fb.data.as_ptr(), ptr);
+    }
+
+    #[test]
+    fn ensure_size_resizes() {
+        let mut fb = FrameBuffer::new(1, 1);
+        fb.data[0] = 9;
+        fb.ensure_size(2, 2);
+        assert_eq!(fb.width, 2);
+        assert_eq!(fb.height, 2);
+        assert_eq!(fb.data.len(), 16);
+    }
+}

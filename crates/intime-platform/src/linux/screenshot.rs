@@ -130,7 +130,7 @@ fn decode_png_to_rgb(bytes: &[u8]) -> Result<CapturedImage, PlatformError> {
     decode_image_bytes(bytes)
 }
 
-fn decode_image_bytes(bytes: &[u8]) -> Result<CapturedImage, PlatformError> {
+pub(crate) fn decode_image_bytes(bytes: &[u8]) -> Result<CapturedImage, PlatformError> {
     let img = image::load(Cursor::new(bytes), image::ImageFormat::Png)
         .or_else(|_| image::load_from_memory(bytes))
         .map_err(|e| PlatformError::Other(anyhow::anyhow!("Failed to decode screenshot: {e}")))?;
@@ -150,4 +150,24 @@ fn dynamic_to_captured(img: DynamicImage) -> Result<CapturedImage, PlatformError
         height,
         pixels: rgb.into_raw(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decodes_png_fixture_to_rgb() {
+        let bytes = include_bytes!("../../tests/fixtures/sample.png");
+        let img = decode_image_bytes(bytes).expect("decode");
+        assert_eq!(img.width, 4);
+        assert_eq!(img.height, 4);
+        assert_eq!(img.pixels.len(), 4 * 4 * 3);
+        assert_eq!(&img.pixels[0..3], &[10, 20, 30]);
+    }
+
+    #[test]
+    fn rejects_empty_bytes() {
+        assert!(decode_image_bytes(b"").is_err());
+    }
 }
