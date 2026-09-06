@@ -1,8 +1,34 @@
 services:
+  embed-stub:
+    build:
+      context: ./docker/embed-stub
+      dockerfile: Dockerfile
+    ports:
+      - "8000:80"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:80/')"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  # Full OpenCLIP service (heavy). Use when you want real model vectors.
+  # docker compose --profile clip up -d intime-ai
   intime-ai:
+    profiles: ["clip"]
     build:
       context: ./crates/intime-ai/python
       dockerfile: Dockerfile
     ports:
-      - "8000:80"
+      - "8001:80"
 
+  # Headless Sway + grim for live Linux capture tests.
+  # docker compose --profile linux-desktop run --rm linux-desktop cargo test -p intime-platform -- --ignored
+  linux-desktop:
+    profiles: ["linux-desktop"]
+    build:
+      context: ./docker/linux-desktop
+      dockerfile: Dockerfile
+    volumes:
+      - ./:/workspace:z
+    environment:
+      - CARGO_HOME=/tmp/cargo-home
