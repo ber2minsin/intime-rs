@@ -9,20 +9,37 @@ use crate::time::Timestamp;
 pub struct Event {
     pub timestamp: Timestamp,
     pub data: EventData,
+    #[serde(default)]
+    pub metadata: EventMetadata,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EventMetadata {
+    pub window_title: Option<String>,
+    pub process_id: Option<u32>,
+    pub executable_path: Option<String>,
+    pub focused_element: Option<String>,
+    pub focused_element_class: Option<String>,
+    pub focused_control_type: Option<String>,
+    pub automation_id: Option<String>,
+    /// Indicates that the UI reported text activity without storing typed text.
+    pub text_changed: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
 pub enum EventData {
     WindowFocus {
-        #[serde(skip_serializing)]
         fingerprint: Hash,
         window_handle: u64,
     },
     TitleChange {
-        #[serde(skip_serializing)]
         fingerprint: Hash,
         new_title: String,
+        window_handle: u64,
+    },
+    TextChanged {
+        fingerprint: Hash,
         window_handle: u64,
     },
     IdleStart,
@@ -30,13 +47,11 @@ pub enum EventData {
     Gap,
     /// Fires when an app is seen first time
     AppSeen {
-        #[serde(skip_serializing)]
         fingerprint: Hash,
         details: AppDetails,
         window_handle: u64,
     },
     Background {
-        #[serde(skip_serializing)]
         fingerprint: Hash,
     },
 }
@@ -46,6 +61,7 @@ impl EventData {
         match self {
             EventData::WindowFocus { fingerprint, .. }
             | EventData::TitleChange { fingerprint, .. }
+            | EventData::TextChanged { fingerprint, .. }
             | EventData::AppSeen { fingerprint, .. } => Some(*fingerprint),
             _ => None,
         }
@@ -55,6 +71,7 @@ impl EventData {
         match self {
             Self::WindowFocus { .. } => "window_focus",
             Self::TitleChange { .. } => "title_change",
+            Self::TextChanged { .. } => "text_changed",
             Self::AppSeen { .. } => "app_seen",
             Self::IdleStart => "idle_start",
             Self::IdleEnd => "idle_end",
@@ -66,9 +83,10 @@ impl EventData {
         match self {
             EventData::WindowFocus { window_handle, .. }
             | EventData::TitleChange { window_handle, .. }
+            | EventData::TextChanged { window_handle, .. }
             | EventData::AppSeen { window_handle, .. } => Some(*window_handle),
             // Background has a fingerprint but no active window handle
-            _ => None
+            _ => None,
         }
     }
 }
@@ -141,16 +159,16 @@ impl AppDetails {
             .version_info
             .as_ref()
             .and_then(|v| v.original_filename.clone())
+            .and_then(|s| norm(&s))
         {
             return original_name;
         }
 
-        let base_name = Path::new(&self.file_path)
+        Path::new(&self.file_path)
             .file_name()
-            .expect("Can not convert file path to file_name")
-            .to_str()
-            .expect("Can not convert file_name to string"); // TODO bare unwrap, should be fine though
-        String::from(base_name)
+            .and_then(|n| n.to_str())
+            .and_then(norm)
+            .unwrap_or_else(|| "unknown".to_string())
     }
 }
 
@@ -170,4 +188,49 @@ pub struct SignatureInfo {
     pub subject_full: Option<String>,
     pub issuer: Option<String>,
     pub serial_number: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn event_metadata_round_trips_through_json() {
+        let event = Event {
+            timestamp: Timestamp::now(),
+            data: EventData::WindowFocus {
+                fingerprint: blake3::hash(b"editor"),
+                window_handle: 42,
+            },
+            metadata: EventMetadata {
+                window_title: Some("mail".into()),
+                process_id: Some(123),
+                executable_path: Some("/bin/editor".into()),
+                focused_element: Some("Body".into()),
+                focused_element_class: Some("TextBox".into()),
+                focused_control_type: Some("Edit".into()),
+                automation_id: Some("body".into()),
+                text_changed: true,
+            },
+        };
+
+        let encoded = serde_json::to_string(&event).expect("event should serialize");
+        let decoded: Event = serde_json::from_str(&encoded).expect("event should deserialize");
+        assert_eq!(decoded.metadata, event.metadata);
+        assert_eq!(decoded.data.name(), "window_focus");
+    }
+
+    #[test]
+    fn display_name_handles_missing_or_non_utf8_paths() {
+        let details = AppDetails {
+            title: String::new(),
+            file_path: String::new(),
+            aumid: None,
+            company_name: None,
+            product_name: None,
+            version_info: None,
+            signature_info: None,
+        };
+        assert_eq!(details.display_name(), "unknown");
+    }
 }

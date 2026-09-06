@@ -8,8 +8,10 @@ impl Timestamp {
     pub fn now() -> Self {
         Self(Utc::now())
     }
-    pub fn as_datetime(&self) -> DateTime<Utc> { self.0 }
+    pub fn as_datetime(&self) -> DateTime<Utc> {
+        self.0
+    }
     pub fn to_filename_readable(&self) -> String {
-        self.0.format("%Y-%m-%d_%H-%M-%SZ").to_string()
+        self.0.format("%Y-%m-%d_%H-%M-%S%.3fZ").to_string()
     }
 }
