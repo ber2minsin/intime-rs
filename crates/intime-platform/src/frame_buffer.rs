@@ -1,4 +1,3 @@
-
 pub struct FrameBuffer {
     /// Raw BGRA8 pixels, `width * height * 4` bytes.
     pub data: Vec<u8>,

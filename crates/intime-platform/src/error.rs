@@ -1,13 +1,5 @@
 use thiserror::Error;
 
-// #[derive(Error, Debug)]
-// pub enum PlatformError {
-//     #[error("")]
-//     WindowsError(#[from] windows::core::Error),
-//     #[error(transparent)]
-//     Other(#[from] anyhow::Error),
-// }
-
 #[derive(Error, Debug)]
 pub enum PlatformError {
     #[cfg(target_os = "windows")]
@@ -22,7 +14,7 @@ pub enum PlatformError {
     #[error("Monitor index {index} is out of range ({available} monitors available)")]
     MonitorOutOfRange { index: u32, available: usize },
 
-    /// HWND was invalid, the window was destroyed, or its rect is zero-sized.
+    /// Window handle was invalid, the window was destroyed, or its rect is zero-sized.
     #[error("Window handle is invalid or the window no longer exists")]
     InvalidWindow,
 
@@ -34,16 +26,12 @@ pub enum PlatformError {
     #[error("Window is not visible on any tracked monitor")]
     WindowNotOnTrackedMonitor,
 
-    /// The DXGI duplication session was invalidated (resolution change, a
-    /// fullscreen exclusive app took over, monitor was unplugged, etc.).
-    /// Recover by calling [`DxgiCapture::reinitialize`].
-    #[error(
-        "DXGI output was lost (display change or exclusive fullscreen app) \
-         — call DxgiCapture::reinitialize"
-    )]
+    /// Display capture session was invalidated (resolution change, exclusive
+    /// fullscreen app, monitor unplug, etc.). Recover by reinitializing.
+    #[error("Display output was lost — reinitialize the capture engine")]
     OutputLost,
 
-    #[error("DXGI is initiated but it captured nothing")]
+    #[error("Capture produced an empty frame")]
     EmptyFrame,
 
     #[error(transparent)]
@@ -53,4 +41,3 @@ pub enum PlatformError {
     #[error("Internal synchronization error: {0}")]
     SynchronizationError(String),
 }
-
