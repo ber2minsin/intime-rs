@@ -2,46 +2,44 @@
 
 ## How to run
 
+### Offline unit / integration
+
 ```bash
 cargo test -p intime-core -p intime-ai -p intime-storage -p intime-platform -p intime-daemon -p intime-migrate -- --test-threads=1
 ```
 
-Use `--test-threads=1` because platform unit tests share a process-global event queue and some daemon e2e tests temporarily change the process working directory for screenshot paths.
+Use `--test-threads=1` because platform unit tests share a process-global event queue and some daemon tests temporarily change the process working directory for screenshot paths.
 
-### Live OS tests (manual)
+### Staged end-to-end (Docker)
+
+```bash
+./scripts/e2e.sh
+```
+
+This builds `embed-stub`, waits for health, runs the offline suite, then runs
+`intime-e2e` scenario replay against real HTTP embeddings. Details: `docs/E2E.md`.
+
+### Live OS tests (manual / linux-desktop profile)
 
 ```bash
 cargo test -p intime-platform --test linux_integration -- --ignored
 cargo run -p intime-platform --example linux_smoke
+
+docker compose --profile linux-desktop run --rm linux-desktop \
+  cargo test -p intime-platform --test linux_integration -- --ignored --nocapture
 ```
 
 ## Suite inventory
 
-Automated tests currently: **55 passed**, **1 ignored** (live Sway), excluding `intime-app`.
-
-| Crate | Tests | Focus |
+| Crate | Kind | Focus |
 | --- | --- | --- |
-| `intime-core` | 13 | models, fingerprints, JSON, timestamps |
-| `intime-ai` | 10 | blob packing, URL validation, serde, unreachable HTTP |
-| `intime-storage` | 15 | `TestDatabase`, apps/companies, all event variants, sqlite-vec search |
-| `intime-platform` | 4 (+1 ignored) | shared queue; factories; Linux capture without panic |
-| `intime-daemon` | 12 | screenshot coalescing units; pipeline e2e with fakes |
-| `intime-migrate` | 1 | migrate idempotency + sqlite-vec |
-
-## End-to-end tests
-
-Daemon e2e tests (`crates/intime-daemon/tests/pipeline_e2e.rs`) are **in-process pipeline tests**:
-
-| Piece | Implementation |
-| --- | --- |
-| Database | `intime_storage::testing::TestDatabase` (temp SQLite file + migrations + sqlite-vec) |
-| Screenshots | `FakeCapture` implementing `ScreenshotSource` |
-| Embeddings | `FakeEmbedding` implementing `EmbeddingServer` |
-| Under test | `handle_incoming_event`, `ScreenshotOrchestrator`, `start_embedding_worker` |
-
-They cover DB writes, app/company registration, screenshot coalescing, embedding queueing/storage, and failure paths without starting the daemon binary or a live desktop.
-
-Live capture/focus belongs in ignored `intime-platform` Linux tests / `linux_smoke`.
+| `intime-core` | unit + integration | models, fingerprints, JSON, timestamps |
+| `intime-ai` | unit + integration | blob packing, URL validation, serde, unreachable HTTP |
+| `intime-storage` | integration | `TestDatabase`, apps/companies, event variants, sqlite-vec, `Storage::connect` |
+| `intime-platform` | unit + factories | frame buffer, PNG decode, shared queue, Linux capture without panic |
+| `intime-daemon` | unit + in-process e2e | screenshot coalescing; pipeline with lightweight fakes |
+| `intime-migrate` | integration | migrate idempotency + sqlite-vec |
+| `intime-e2e` | staged scenario e2e | fixture screenshots + real `EmbeddingService` + Docker stub/CLIP |
 
 ## Coverage
 
@@ -49,30 +47,20 @@ Live capture/focus belongs in ignored `intime-platform` Linux tests / `linux_smo
 cargo install cargo-llvm-cov --locked
 rustup component add llvm-tools-preview
 
-cargo llvm-cov -p intime-core -p intime-ai -p intime-storage -p intime-platform -p intime-daemon -p intime-migrate \
+cargo llvm-cov -p intime-core -p intime-ai -p intime-storage -p intime-platform -p intime-daemon -p intime-migrate -p intime-e2e \
   --summary-only -- --test-threads=1
 ```
 
-HTML:
+For coverage that includes staged HTTP e2e, start embed-stub first and export
+`EMBEDDING_SERVER_URL=http://127.0.0.1:8000`.
 
-```bash
-cargo llvm-cov -p intime-core -p intime-ai -p intime-storage -p intime-platform -p intime-daemon -p intime-migrate \
-  --html --output-dir target/llvm-cov -- --test-threads=1
-```
-
-### Latest measurement (2026-09-06)
-
-`cargo llvm-cov` over the packages above:
+### Latest measurement (2026-09-06, with `EMBEDDING_SERVER_URL` + embed-stub)
 
 | Metric | Covered | Total | Percent |
 | --- | --- | --- | --- |
-| Lines | 616 | 1109 | **55.55%** |
-| Functions | 87 | 152 | **57.24%** |
-| Regions | 835 | 1537 | **54.33%** |
+| Lines | 892 | 1398 | **63.81%** |
+| Functions | 113 | 180 | **62.78%** |
+| Regions | 1217 | 1949 | **62.44%** |
 
-Interpretation:
-
-- Near-full coverage on `intime-core`, `intime-ai` models/helpers, storage repositories exercised by `TestDatabase`, and daemon `pipeline` / `orchestrator`.
-- Low coverage on OS-native paths (`linux/atspi_hooks`, `linux/sway`, portal/grim branches) and binary `main` entrypoints — expected without a live desktop session or CLI invocation in CI.
-
-Re-run the command above after large test changes and update this table.
+Near-full on core/AI helpers, storage facade, daemon orchestrator/pipeline, and staged e2e runner.
+Largest remaining gaps: OS-native loops (`atspi_hooks`, full Sway event loop), binary `main`s, and DXGI/Windows paths (not instrumented on Linux hosts).

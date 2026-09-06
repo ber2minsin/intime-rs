@@ -14,6 +14,7 @@ The daemon captures window activity, optional screenshots, and embeddings so pas
 | `intime-ai` | Embedding client (FastAPI service) |
 | `intime-daemon` | Runtime orchestrator |
 | `intime-migrate` | Database migrations CLI |
+| `intime-e2e` | Staged scenario replay / Docker e2e |
 | `intime-app` | Tauri desktop UI (optional for backend work) |
 
 ## Quick start (backend)
@@ -60,68 +61,34 @@ This replaced “screenshot every focus/title event,” which caused lag under b
 
 ## Testing
 
-### Run the suite
+### Offline suite
 
 ```bash
-# recommended: backend crates, single-threaded (shared platform queue / cwd)
 cargo test -p intime-core -p intime-ai -p intime-storage -p intime-platform -p intime-daemon -p intime-migrate -- --test-threads=1
 ```
 
-Per crate:
+### Staged e2e (Docker + scenario replay)
 
 ```bash
-cargo test -p intime-core
-cargo test -p intime-ai
-cargo test -p intime-storage
-cargo test -p intime-platform
-cargo test -p intime-daemon
-cargo test -p intime-migrate
+./scripts/e2e.sh
+```
+
+Uses real SQLite/sqlite-vec, real daemon pipeline code, real HTTP embedding client, fixture screenshot frames, and a staged embedding server (`embed-stub`). See `docs/E2E.md`.
+
+### Coverage
+
+```bash
+cargo llvm-cov -p intime-core -p intime-ai -p intime-storage -p intime-platform -p intime-daemon -p intime-migrate -p intime-e2e \
+  --summary-only -- --test-threads=1
 ```
 
 Live desktop (ignored by default; needs Sway + grim):
 
 ```bash
-cargo test -p intime-platform --test linux_integration -- --ignored
-cargo run -p intime-platform --example linux_smoke
+cargo test -p intime-platform -- --ignored
 ```
 
-### What the e2e tests use
-
-Daemon pipeline tests (`crates/intime-daemon/tests/pipeline_e2e.rs`) are **library-level end-to-end** tests, not a full GUI session:
-
-- `intime_storage::testing::TestDatabase` — temporary on-disk SQLite, migrations applied, **sqlite-vec** registered
-- `FakeCapture` implementing `ScreenshotSource` — returns tiny RGB frames (no grim/DXGI/portal)
-- `FakeEmbedding` implementing `EmbeddingServer` — returns a 512-dim vector without HTTP
-- Real `handle_incoming_event` + `ScreenshotOrchestrator` + `start_embedding_worker`
-
-That exercises app registration, event persistence (full JSON payload), screenshot coalescing, embedding queueing/storage, and failure paths.
-
-Storage integration tests use the same `TestDatabase` helper for repository/sqlite-vec coverage.
-
-### Coverage
-
-Install once:
-
-```bash
-cargo install cargo-llvm-cov --locked
-rustup component add llvm-tools-preview
-```
-
-Then:
-
-```bash
-cargo llvm-cov -p intime-core -p intime-ai -p intime-storage -p intime-platform -p intime-daemon -p intime-migrate \
-  --summary-only -- --test-threads=1
-```
-
-HTML report:
-
-```bash
-cargo llvm-cov -p intime-core -p intime-ai -p intime-storage -p intime-platform -p intime-daemon -p intime-migrate \
-  --html --output-dir target/llvm-cov -- --test-threads=1
-```
-
-See `docs/TESTING.md` for the latest measured totals and suite inventory.
+Full details: `docs/TESTING.md`, `docs/E2E.md`.
 
 ## Platform notes
 
