@@ -1,4 +1,4 @@
-use anyhow::Error;
+use anyhow::{Context, Error};
 use reqwest::Url;
 
 use crate::models::{EmbeddingRequest, EmbeddingResponse};
@@ -17,11 +17,11 @@ impl EmbeddingService {
     const TEXT_ENDPOINT: &'static str = "/embed/text";
     const IMAGE_ENDPOINT: &'static str = "/embed/image";
 
-    pub fn new(base_url: String) -> Self {
-        Self {
-            base_url: Url::parse(&base_url).expect("Wrong url format"),
+    pub fn new(base_url: &str) -> Result<Self, Error> {
+        Ok(Self {
+            base_url: Url::parse(base_url).context("invalid embedding server URL")?,
             client: reqwest::Client::new(),
-        }
+        })
     }
 }
 

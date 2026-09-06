@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-
 #[derive(Debug)]
 pub struct EmbeddingTask {
     pub event_id: i64,
@@ -35,9 +34,6 @@ pub fn vec_to_blob(v: &[f32]) -> Vec<u8> {
 
 pub fn blob_to_vec(b: &[u8]) -> Vec<f32> {
     b.chunks_exact(4)
-        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+        .filter_map(|c| c.try_into().ok().map(f32::from_le_bytes))
         .collect()
 }
-
-
-
