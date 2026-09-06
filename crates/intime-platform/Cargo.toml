@@ -8,8 +8,16 @@ anyhow = "1.0.102"
 intime-core = { path = "../intime-core" }
 thiserror = "2.0.18"
 tokio = { version = "1.52.1", features = ["full"] }
-image = { version = "0.25", default-features = false, features = ["jpeg"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 tracing = "0.1.44"
+
+[target.'cfg(target_os="linux")'.dependencies]
+atspi = { version = "0.30.0", features = ["tokio"] }
+futures-lite = "2.6.1"
+tokio-stream = "0.1.19"
+swayipc = "4.0.0"
+ashpd = { version = "0.11", features = ["tokio"] }
+url = "2.5"
 
 [target.'cfg(target_os="windows")'.dependencies]
 windows = { version = "0.62.2", features = [
@@ -25,8 +33,6 @@ windows = { version = "0.62.2", features = [
     "Win32_Storage_EnhancedStorage",
     "Win32_Storage_FileSystem",
     "Win32_Security_Cryptography",
-
-
     "Win32_Graphics_Direct3D",
     "Win32_Graphics_Direct3D11",
     "Win32_Graphics_Dxgi",
@@ -35,5 +41,4 @@ windows = { version = "0.62.2", features = [
     "Win32_Graphics_Dwm",
 ] }
 windows-result = "0.4.1"
-uiautomation = { version = "0.25.0", features = ["event", "process"] }
-
+uiautomation = { version = "0.25.1", features = ["event", "process"] }
