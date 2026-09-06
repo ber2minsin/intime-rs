@@ -1,4 +1,3 @@
-use image::ImageFormat;
 use windows::{
     Win32::{
         Foundation::{HWND, RECT},
@@ -18,12 +17,14 @@ use windows::{
             },
             Gdi::{HMONITOR, MONITOR_DEFAULTTONEAREST, MonitorFromWindow},
         },
-        UI::WindowsAndMessaging::{GetDesktopWindow, GetWindowRect, IsIconic},
+        UI::WindowsAndMessaging::{GetWindowRect, IsIconic},
     },
     core::Interface,
 };
 
-use crate::{CapturedImage, error::PlatformError, frame_buffer::FrameBuffer, traits::ScreenshotSource};
+use crate::{
+    CapturedImage, error::PlatformError, frame_buffer::FrameBuffer, traits::ScreenshotSource,
+};
 
 struct OutputCapture {
     device: ID3D11Device,
@@ -78,7 +79,10 @@ impl OutputCapture {
             MipLevels: 1,
             ArraySize: 1,
             Format: DXGI_FORMAT_B8G8R8A8_UNORM,
-            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
             Usage: D3D11_USAGE_STAGING,
             BindFlags: 0,
             CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
@@ -102,7 +106,11 @@ impl OutputCapture {
         })
     }
 
-    fn capture_full(&mut self, buffer: &mut FrameBuffer, timeout_ms: u32) -> Result<bool, PlatformError> {
+    fn capture_full(
+        &mut self,
+        buffer: &mut FrameBuffer,
+        timeout_ms: u32,
+    ) -> Result<bool, PlatformError> {
         buffer.ensure_size(self.width, self.height);
 
         let mut frame_info = DXGI_OUTDUPL_FRAME_INFO::default();
@@ -113,7 +121,9 @@ impl OutputCapture {
                 .AcquireNextFrame(timeout_ms, &mut frame_info, &mut resource)
         } {
             Err(ref e) if e.code() == DXGI_ERROR_WAIT_TIMEOUT => return Ok(false),
-            Err(ref e) if e.code() == DXGI_ERROR_ACCESS_LOST => return Err(PlatformError::OutputLost),
+            Err(ref e) if e.code() == DXGI_ERROR_ACCESS_LOST => {
+                return Err(PlatformError::OutputLost);
+            }
             Err(e) => return Err(PlatformError::WindowsError(e)),
             Ok(()) => {}
         }
@@ -269,7 +279,7 @@ impl DxgiCapture {
         }
 
         let mut temp = FrameBuffer::new(mon_w, mon_h);
-        
+
         // This index access now works perfectly because we have &mut self context
         let captured = self.outputs[output_idx].capture_full(&mut temp, 100)?;
         if !captured {
@@ -314,7 +324,11 @@ impl ScreenshotSource for DxgiCapture {
                 rgb_pixels.push(pixel[0]); // B
             }
 
-            Ok(CapturedImage { width, height, pixels: rgb_pixels })
+            Ok(CapturedImage {
+                width,
+                height,
+                pixels: rgb_pixels,
+            })
         } else {
             Err(PlatformError::EmptyFrame)
         }

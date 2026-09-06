@@ -3,11 +3,15 @@ use crate::error::PlatformError;
 use std::{ffi::c_void, os::windows::ffi::OsStrExt, path::Path, ptr};
 
 use intime_core::{
-    models::{AppDetails, Event, EventData, SignatureInfo, VersionInfo},
+    models::{AppDetails, Event, EventData, EventMetadata, SignatureInfo, VersionInfo},
     time::Timestamp,
 };
 use tracing::debug;
-use uiautomation::UIAutomation;
+use uiautomation::{
+    UIAutomation, UIElement,
+    events::{CustomFocusChangedEventHandler, UIFocusChangedEventHandler},
+    types::Handle,
+};
 use windows::Win32::{
     Foundation::{CloseHandle, HWND},
     Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute},
@@ -35,17 +39,57 @@ use windows::Win32::{
         Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWinEvent},
         Shell::PropertiesSystem::{IPropertyStore, SHGetPropertyStoreForWindow},
         WindowsAndMessaging::{
-            DispatchMessageW, EVENT_OBJECT_NAMECHANGE, EVENT_SYSTEM_FOREGROUND, GA_ROOTOWNER,
-            GWL_EXSTYLE, GetAncestor, GetForegroundWindow, GetMessageW, GetWindowLongW,
-            GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible, MSG, OBJID_WINDOW,
-            TranslateMessage, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WS_EX_TOOLWINDOW,
+            DispatchMessageW, EVENT_OBJECT_NAMECHANGE, EVENT_OBJECT_VALUECHANGE,
+            EVENT_SYSTEM_FOREGROUND, GA_ROOTOWNER, GWL_EXSTYLE, GetAncestor, GetForegroundWindow,
+            GetMessageW, GetWindowLongW, GetWindowTextW, GetWindowThreadProcessId, IsWindowVisible,
+            MSG, OBJID_WINDOW, TranslateMessage, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS,
+            WS_EX_TOOLWINDOW,
         },
     },
 };
 use windows::core::PCWSTR;
 use windows::core::PWSTR;
 
-use crate::windows::event_source::push_event;
+use crate::shared::push_event;
+
+struct FocusChangedHandler;
+
+impl CustomFocusChangedEventHandler for FocusChangedHandler {
+    fn handle(&self, sender: &UIElement) -> uiautomation::Result<()> {
+        let hwnd: HWND = sender.get_native_window_handle()?.into();
+        if hwnd.0.is_null() {
+            return Ok(());
+        }
+
+        let details = match unsafe { get_details(hwnd) } {
+            Ok(details) => details,
+            Err(error) => {
+                debug!("Could not retrieve focused UI Automation window: {error}");
+                return Ok(());
+            }
+        };
+        let fingerprint = details.fingerprint();
+        let metadata = interaction_metadata(hwnd, true);
+        push_event(Event {
+            timestamp: Timestamp::now(),
+            data: EventData::WindowFocus {
+                fingerprint,
+                window_handle: hwnd.0 as u64,
+            },
+            metadata,
+        });
+        push_event(Event {
+            timestamp: Timestamp::now(),
+            data: EventData::AppSeen {
+                fingerprint,
+                details,
+                window_handle: hwnd.0 as u64,
+            },
+            metadata: EventMetadata::default(),
+        });
+        Ok(())
+    }
+}
 
 pub unsafe extern "system" fn win_event_proc(
     _h_win_event_hook: HWINEVENTHOOK,
@@ -70,6 +114,8 @@ pub unsafe extern "system" fn win_event_proc(
         };
 
         let fingerprint = details.fingerprint();
+        let mut metadata = interaction_metadata(hwnd, event == EVENT_SYSTEM_FOREGROUND);
+        metadata.text_changed = event == EVENT_OBJECT_VALUECHANGE;
         let is_bg = is_background_window(hwnd);
 
         let timestamp = Timestamp::now();
@@ -78,6 +124,7 @@ pub unsafe extern "system" fn win_event_proc(
             push_event(Event {
                 timestamp,
                 data: event_data,
+                metadata: interaction_metadata(hwnd, false),
             });
         } else {
             let mut event_data = None;
@@ -93,16 +140,25 @@ pub unsafe extern "system" fn win_event_proc(
                         event_data = Some(EventData::TitleChange {
                             new_title: details.title.clone(),
                             fingerprint,
-                            window_handle: hwnd.0 as u64
+                            window_handle: hwnd.0 as u64,
                         });
                     }
                 }
-                _ => {tracing::info!("Ignored system hook event: {event}");}
+                EVENT_OBJECT_VALUECHANGE => {
+                    event_data = Some(EventData::TextChanged {
+                        fingerprint,
+                        window_handle: hwnd.0 as u64,
+                    });
+                }
+                _ => {
+                    tracing::info!("Ignored system hook event: {event}");
+                }
             };
             if let Some(data) = event_data {
                 push_event(Event {
                     timestamp,
                     data,
+                    metadata: metadata.clone(),
                 });
             }
 
@@ -114,11 +170,60 @@ pub unsafe extern "system" fn win_event_proc(
                 data: EventData::AppSeen {
                     fingerprint,
                     details,
-                    window_handle: hwnd.0 as u64
+                    window_handle: hwnd.0 as u64,
                 },
+                metadata,
             });
         }
     }
+}
+
+fn interaction_metadata(
+    hwnd: HWND,
+    use_focused_element: bool,
+) -> intime_core::models::EventMetadata {
+    let mut metadata = intime_core::models::EventMetadata {
+        window_title: Some(get_title(hwnd)).filter(|title| !title.is_empty()),
+        ..Default::default()
+    };
+
+    let automation = match UIAutomation::new_direct() {
+        Ok(automation) => automation,
+        Err(error) => {
+            debug!("UI Automation initialization failed: {error}");
+            return metadata;
+        }
+    };
+
+    let element = if use_focused_element {
+        automation.get_focused_element()
+    } else {
+        automation.element_from_handle(Handle::from(hwnd))
+    };
+
+    let element = match element {
+        Ok(element) => element,
+        Err(error) => {
+            debug!("UI Automation element lookup failed: {error}");
+            return metadata;
+        }
+    };
+
+    metadata.process_id = element.get_process_id().ok();
+    metadata.focused_element = element.get_name().ok().filter(|value| !value.is_empty());
+    metadata.focused_element_class = element
+        .get_classname()
+        .ok()
+        .filter(|value| !value.is_empty());
+    metadata.focused_control_type = element
+        .get_control_type()
+        .ok()
+        .map(|value| format!("{value:?}"));
+    metadata.automation_id = element
+        .get_automation_id()
+        .ok()
+        .filter(|value| !value.is_empty());
+    metadata
 }
 
 unsafe fn is_background_window(hwnd: HWND) -> bool {
@@ -517,65 +622,33 @@ unsafe fn get_aumid(hwnd: HWND) -> Result<Option<String>, PlatformError> {
             return Ok(None);
         }
 
-        let aumid = p_str.to_string();
-        if aumid.is_ok() {
-            return Ok(Some(aumid.unwrap()));
-        } else {
-            return Ok(None);
-        }
+        let aumid = p_str.to_string().ok().filter(|s| !s.is_empty());
+        Ok(aumid)
     }
 }
 
 unsafe fn get_title(hwnd: HWND) -> String {
     let mut buffer = vec![0u16; 512];
     let len = unsafe { GetWindowTextW(hwnd, &mut buffer) };
-    let title = String::from_utf16_lossy(&buffer[..len as usize]);
-    title
-}
-
-fn dump_focused_element() {
-    let automation = match UIAutomation::new() {
-        Ok(a) => a,
-        Err(_) => return,
-    };
-
-    let element = match automation.get_focused_element() {
-        Ok(e) => e,
-        Err(_) => return,
-    };
-
-    let name = element.get_name().unwrap_or_default();
-
-    let class_name = element.get_classname().unwrap_or_default();
-
-    let automation_id = element.get_automation_id().unwrap_or_default();
-
-    let control_type = element
-        .get_control_type()
-        .map(|c| format!("{:?}", c))
-        .unwrap_or_default();
-
-    println!(
-        "Focused element: {} | {} | {} | {}",
-        name,
-        control_type,
-        class_name,
-        automation_id
-    );
+    String::from_utf16_lossy(&buffer[..len as usize])
 }
 
 pub unsafe fn install_hooks() {
     let flags = WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS;
     unsafe {
-        let hook_fg = SetWinEventHook(
-            EVENT_SYSTEM_FOREGROUND,
-            EVENT_SYSTEM_FOREGROUND,
-            None,
-            Some(win_event_proc),
-            0,
-            0,
-            flags,
-        );
+        let automation = match UIAutomation::new() {
+            Ok(automation) => Some(automation),
+            Err(error) => {
+                tracing::error!("UI Automation initialization failed: {error}");
+                None
+            }
+        };
+        let focus_handler = UIFocusChangedEventHandler::from(FocusChangedHandler);
+        if let Some(automation) = &automation {
+            if let Err(error) = automation.add_focus_changed_event_handler(None, &focus_handler) {
+                tracing::error!("Could not register UI Automation focus handler: {error}");
+            }
+        }
 
         let hook_name = SetWinEventHook(
             EVENT_OBJECT_NAMECHANGE,
@@ -586,8 +659,17 @@ pub unsafe fn install_hooks() {
             0,
             flags,
         );
+        let hook_value = SetWinEventHook(
+            EVENT_OBJECT_VALUECHANGE,
+            EVENT_OBJECT_VALUECHANGE,
+            None,
+            Some(win_event_proc),
+            0,
+            0,
+            flags,
+        );
 
-        if hook_fg.0.is_null() || hook_name.0.is_null() {
+        if hook_name.0.is_null() || hook_value.0.is_null() {
             eprintln!("SetWinEventHook failed");
         }
 
@@ -598,8 +680,11 @@ pub unsafe fn install_hooks() {
             DispatchMessageW(&msg);
         }
 
-        let _ = UnhookWinEvent(hook_fg);
         let _ = UnhookWinEvent(hook_name);
+        let _ = UnhookWinEvent(hook_value);
+        if let Some(automation) = &automation {
+            let _ = automation.remove_focus_changed_event_handler(&focus_handler);
+        }
         CoUninitialize();
     }
 }
