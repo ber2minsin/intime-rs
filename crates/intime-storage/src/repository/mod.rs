@@ -1,3 +1,3 @@
 pub mod app;
-pub mod event;
 pub mod embedding;
+pub mod event;

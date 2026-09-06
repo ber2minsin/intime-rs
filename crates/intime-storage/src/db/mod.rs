@@ -1,6 +1,5 @@
 use sqlx::SqlitePool;
 
-
 pub mod app;
 pub mod embedding;
 pub mod event;

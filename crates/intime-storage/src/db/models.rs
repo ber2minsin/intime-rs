@@ -14,10 +14,8 @@ pub struct EventRecord {
     pub event_type: String, // TODO actual event types
     pub occured_at: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
-    // AI Stuff, will be addded later
-    // pub embedding_metadata: Option<_>,
-    // pub embedding_image: Option<_>,
-    // pub embedding_backend: Option<_>,
+    pub payload: Option<String>,
+    pub screenshot_path: Option<String>,
 }
 
 #[derive(sqlx::FromRow, Debug)]
