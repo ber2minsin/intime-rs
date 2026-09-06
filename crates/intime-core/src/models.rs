@@ -62,7 +62,8 @@ impl EventData {
             EventData::WindowFocus { fingerprint, .. }
             | EventData::TitleChange { fingerprint, .. }
             | EventData::TextChanged { fingerprint, .. }
-            | EventData::AppSeen { fingerprint, .. } => Some(*fingerprint),
+            | EventData::AppSeen { fingerprint, .. }
+            | EventData::Background { fingerprint } => Some(*fingerprint),
             _ => None,
         }
     }

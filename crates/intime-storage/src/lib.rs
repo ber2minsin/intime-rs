@@ -4,3 +4,4 @@ pub mod db;
 pub mod error;
 pub mod repository;
 pub mod storage;
+pub mod testing;

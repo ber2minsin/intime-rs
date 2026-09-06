@@ -1,13 +1,13 @@
 use sqlx::types::chrono::{DateTime, Utc};
 
-#[derive(sqlx::FromRow)]
+#[derive(Debug, sqlx::FromRow)]
 pub struct CompanyRecord {
     pub id: i64,
     pub company_name: String,
     pub created_at: DateTime<Utc>,
 }
 
-#[derive(sqlx::FromRow)]
+#[derive(Debug, sqlx::FromRow)]
 pub struct EventRecord {
     pub id: i64,
     pub app_id: Option<i64>,

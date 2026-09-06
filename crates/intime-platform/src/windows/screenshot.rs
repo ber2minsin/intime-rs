@@ -69,7 +69,7 @@ impl OutputCapture {
         })?;
 
         let duplication = unsafe { output.DuplicateOutput(&device) }?;
-        let mut dupl_desc = unsafe { duplication.GetDesc() };
+        let dupl_desc = unsafe { duplication.GetDesc() };
         let width = dupl_desc.ModeDesc.Width;
         let height = dupl_desc.ModeDesc.Height;
 
@@ -174,6 +174,10 @@ impl OutputCapture {
 pub struct DxgiCapture {
     outputs: Vec<OutputCapture>,
 }
+
+// DXGI/COM handles are raw pointers; capture is always used from a single
+// dedicated thread in the daemon.
+unsafe impl Send for DxgiCapture {}
 
 impl DxgiCapture {
     pub fn new() -> Result<Self, PlatformError> {

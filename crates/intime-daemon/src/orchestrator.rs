@@ -59,7 +59,7 @@ impl ScreenshotOrchestrator {
         Self::with_minimum_interval(source, Duration::from_millis(750))
     }
 
-    fn with_minimum_interval(
+    pub fn with_minimum_interval(
         source: Box<dyn ScreenshotSource>,
         minimum_interval: Duration,
     ) -> Self {

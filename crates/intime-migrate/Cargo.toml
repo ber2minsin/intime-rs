@@ -3,6 +3,10 @@ name = "intime-migrate"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "intime_migrate"
+path = "src/lib.rs"
+
 [[bin]]
 name = "migrate"
 path = "src/main.rs"
@@ -20,3 +24,6 @@ tokio = { version = "1.52.1", features = ["full"] }
 anyhow = "1.0.102"
 dotenvy = "0.15.7"
 
+[dev-dependencies]
+tempfile = "3.23.0"
+intime-ai = { path = "../intime-ai" }

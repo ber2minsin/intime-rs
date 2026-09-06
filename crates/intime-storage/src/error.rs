@@ -14,4 +14,7 @@ pub enum StorageError {
 
     #[error("{entity} is not found on the Storage")]
     NotFound { entity: &'static str },
+
+    #[error(transparent)]
+    Other(#[from] anyhow::Error),
 }

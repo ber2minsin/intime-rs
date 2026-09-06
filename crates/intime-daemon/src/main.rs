@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use intime_ai::{embedding::EmbeddingService, models::EmbeddingTask};
 use intime_core::models::Event;
+use intime_daemon::{ScreenshotOrchestrator, handle_incoming_event, start_embedding_worker};
 use intime_platform::{create_capture_engine, create_event_source};
 use intime_storage::{config::StorageConfig, storage::Storage};
 use std::{env, sync::Arc};
@@ -9,14 +10,6 @@ use tracing::{error, info, level_filters::LevelFilter, warn};
 use tracing_subscriber::{
     Layer, Registry, fmt, layer::SubscriberExt, util::SubscriberInitExt as _,
 };
-
-use crate::{
-    orchestrator::ScreenshotOrchestrator,
-    pipeline::{handle_incoming_event, start_embedding_worker},
-};
-
-mod orchestrator;
-mod pipeline;
 
 fn setup_tracing() -> tracing_appender::non_blocking::WorkerGuard {
     let file_appender = tracing_appender::rolling::never(".", "intime-daemon.log");

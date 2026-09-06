@@ -1,7 +1,9 @@
-# Tauri + React + Typescript
+# intime-app
 
-This template should help get you started developing with Tauri, React and Typescript in Vite.
+Tauri + React desktop shell for searching the local activity timeline.
 
-## Recommended IDE Setup
+Backend crates (`intime-daemon`, `intime-storage`, `intime-ai`) can be developed and tested without this UI.
 
-- [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+## Develop
+
+See the Vite/Tauri notes in this directory for frontend tooling. Database and embedding settings come from environment variables (`DATABASE_FILE`, embedding server URL).

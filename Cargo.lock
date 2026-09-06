@@ -2177,6 +2177,7 @@ name = "intime-daemon"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "blake3",
  "dotenvy",
  "image",
@@ -2184,6 +2185,9 @@ dependencies = [
  "intime-core",
  "intime-platform",
  "intime-storage",
+ "serde_json",
+ "sqlx",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-appender",
@@ -2196,9 +2200,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "dotenvy",
+ "intime-ai",
  "libsqlite3-sys",
  "sqlite-vec",
  "sqlx",
+ "tempfile",
  "tokio",
 ]
 
@@ -2237,6 +2243,7 @@ dependencies = [
  "serde_json",
  "sqlite-vec",
  "sqlx",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
 ]

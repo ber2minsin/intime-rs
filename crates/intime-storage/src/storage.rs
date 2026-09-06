@@ -6,6 +6,7 @@ use crate::{
     error::StorageError,
     repository::{app::AppRepository, embedding::EmbeddingRepository, event::EventRepository},
 };
+use sqlx::SqlitePool;
 
 #[derive(Clone)]
 pub struct Storage {
@@ -17,15 +18,18 @@ pub struct Storage {
 impl Storage {
     pub async fn connect(config: &StorageConfig) -> Result<Self, StorageError> {
         let pool = build_pool(&config.database_file).await?;
+        Ok(Self::from_pool(pool))
+    }
 
+    pub fn from_pool(pool: SqlitePool) -> Self {
         let app_repo = SqliteRepository::new(pool.clone());
         let event_repo = SqliteRepository::new(pool.clone());
-        let embedding_repo = SqliteRepository::new(pool.clone());
+        let embedding_repo = SqliteRepository::new(pool);
 
-        Ok(Storage {
+        Storage {
             app_repository: Arc::new(app_repo),
             event_repository: Arc::new(event_repo),
             embedding_repository: Arc::new(embedding_repo),
-        })
+        }
     }
 }

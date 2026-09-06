@@ -183,7 +183,7 @@ fn interaction_metadata(
     use_focused_element: bool,
 ) -> intime_core::models::EventMetadata {
     let mut metadata = intime_core::models::EventMetadata {
-        window_title: Some(get_title(hwnd)).filter(|title| !title.is_empty()),
+        window_title: unsafe { Some(get_title(hwnd)).filter(|title| !title.is_empty()) },
         ..Default::default()
     };
 
