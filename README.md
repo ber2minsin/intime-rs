@@ -60,7 +60,13 @@ Opt out of intrusive or AI-related behavior via env (see `.env.example`):
 
 ## Screenshot policy
 
-`ScreenshotOrchestrator` coalesces captures so rapid UI churn does not stall the desktop:
+`ScreenshotOrchestrator` coalesces captures so rapid UI churn does not stall the desktop.
+
+Stored JPEGs under `data/screenshots/` are age-managed by a daemon retention sweep
+(default: full quality 2 days → compact → delete after 7 days; soft 512MB budget).
+Embeddings remain after files are removed. Mark a session `important` to preserve
+its screenshots — see `docs/DATA_MODEL.md` and `.env.example`.
+
 
 1. Only events with a `window_handle` are candidates.
 2. Capture key = `(handle, app fingerprint, title)`.
