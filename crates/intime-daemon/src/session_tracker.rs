@@ -1,0 +1,269 @@
+use std::time::{Duration, Instant};
+
+use anyhow::Result;
+use intime_core::{
+    category::{
+        context_key, event_is_high_value, event_is_meaningful, is_media_category, CategoryHit,
+        CategoryMatchInput,
+    },
+    features::FeatureFlags,
+    models::{Event, EventData},
+    session::{SessionPromotionPolicy, SessionSource},
+    time::Timestamp,
+};
+use intime_storage::storage::Storage;
+
+/// Tracks open sessions by category + context. Discrete verbs stay raw events.
+pub struct SessionTracker {
+    flags: FeatureFlags,
+    gap: Duration,
+    policy: SessionPromotionPolicy,
+    current_session: Option<i64>,
+    last_category_id: Option<i64>,
+    last_category_slug: Option<String>,
+    last_context_key: Option<String>,
+    last_app_id: Option<i64>,
+    last_activity: Option<Instant>,
+    /// Candidate not yet promoted to a DB session.
+    pending: Option<PendingSession>,
+    last_product_hint: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct PendingSession {
+    category_id: i64,
+    category_slug: String,
+    context_key: String,
+    app_id: Option<i64>,
+    title: Option<String>,
+    started_at: Timestamp,
+    first_seen: Instant,
+    meaningful_events: u32,
+}
+
+impl SessionTracker {
+    pub fn new(flags: FeatureFlags) -> Self {
+        Self {
+            flags,
+            gap: Duration::from_secs(5 * 60),
+            policy: SessionPromotionPolicy::default(),
+            current_session: None,
+            last_category_id: None,
+            last_category_slug: None,
+            last_context_key: None,
+            last_app_id: None,
+            last_activity: None,
+            pending: None,
+            last_product_hint: None,
+        }
+    }
+
+    pub fn current_session_id(&self) -> Option<i64> {
+        self.current_session
+    }
+
+    pub async fn observe(
+        &mut self,
+        storage: &Storage,
+        event: &Event,
+        app_id: Option<i64>,
+        hit: Option<&CategoryHit>,
+        category_slug: &str,
+        product_hint: Option<&str>,
+    ) -> Result<Option<i64>> {
+        if !self.flags.session_grouping {
+            return Ok(None);
+        }
+
+        let now_inst = Instant::now();
+        let now = event.timestamp;
+
+        // AppSeen enriches identity but must not open/split sessions by itself.
+        // Still attach to the current session when one is already open.
+        if matches!(event.data, EventData::AppSeen { .. }) {
+            if let EventData::AppSeen { details, .. } = &event.data {
+                self.last_product_hint = details
+                    .product_name
+                    .clone()
+                    .or_else(|| (!details.file_path.is_empty()).then(|| details.display_name()));
+            }
+            self.last_activity = Some(now_inst);
+            return Ok(self.current_session);
+        }
+
+        let _ = product_hint.or(self.last_product_hint.as_deref());
+
+        let document = event
+            .metadata
+            .document_path
+            .clone()
+            .or_else(|| event.metadata.document_name.clone())
+            .or_else(|| event.metadata.url.clone());
+
+        let media_title = if is_media_category(category_slug) {
+            event
+                .metadata
+                .window_title
+                .as_deref()
+                .or(match &event.data {
+                    EventData::UiAction { label, .. } => label.as_deref(),
+                    _ => None,
+                })
+        } else {
+            None
+        };
+
+        let Some(hit) = hit else {
+            // Uncategorized: do not open sessions; still close on idle.
+            if self.idle_break(event, now_inst) {
+                self.close_open(storage, now).await?;
+            }
+            self.last_activity = Some(now_inst);
+            return Ok(self.current_session);
+        };
+
+        let ctx = context_key(category_slug, app_id, document.as_deref(), media_title);
+        let title = event
+            .metadata
+            .window_title
+            .clone()
+            .or(document)
+            .or_else(|| media_title.map(|s| s.to_string()));
+
+        if self.idle_break(event, now_inst) {
+            self.close_open(storage, now).await?;
+            self.pending = None;
+        }
+
+        if matches!(event.data.name(), "idle_start" | "gap") {
+            self.last_activity = Some(now_inst);
+            return Ok(None);
+        }
+
+        let category_changed = self.last_category_id != Some(hit.category_id);
+        let context_changed = self.last_context_key.as_deref() != Some(ctx.as_str());
+
+        if category_changed || context_changed {
+            self.close_open(storage, now).await?;
+            self.pending = Some(PendingSession {
+                category_id: hit.category_id,
+                category_slug: category_slug.to_string(),
+                context_key: ctx.clone(),
+                app_id,
+                title: title.clone(),
+                started_at: now,
+                first_seen: now_inst,
+                meaningful_events: 0,
+            });
+            self.last_category_id = Some(hit.category_id);
+            self.last_category_slug = Some(category_slug.to_string());
+            self.last_context_key = Some(ctx);
+            self.last_app_id = app_id;
+        }
+
+        let ui_kind = match &event.data {
+            EventData::UiAction { kind, .. } => Some(kind.as_str()),
+            _ => None,
+        };
+        let meaningful = event_is_meaningful(event.data.name());
+        let high_value = event_is_high_value(event.data.name(), ui_kind);
+
+        if let Some(pending) = self.pending.as_mut() {
+            if meaningful {
+                pending.meaningful_events = pending.meaningful_events.saturating_add(1);
+            }
+            if title.is_some() {
+                pending.title = title.clone().or(pending.title.clone());
+            }
+        }
+
+        if self.current_session.is_none() {
+            let should_promote = high_value
+                || self.pending.as_ref().is_some_and(|p| {
+                    p.meaningful_events >= self.policy.min_meaningful_events
+                        || now_inst.duration_since(p.first_seen)
+                            >= Duration::from_secs(self.policy.min_duration_secs)
+                });
+            if should_promote {
+                if let Some(pending) = self.pending.take() {
+                    let session_id = storage
+                        .session_repository
+                        .open_session(
+                            pending.started_at.as_datetime(),
+                            Some(&pending.category_slug),
+                            pending.title.as_deref(),
+                            SessionSource::Heuristic.as_str(),
+                            Some(pending.category_id),
+                            Some(&pending.context_key),
+                            pending.app_id,
+                        )
+                        .await?;
+                    self.current_session = Some(session_id);
+                    self.last_category_id = Some(pending.category_id);
+                    self.last_category_slug = Some(pending.category_slug);
+                    self.last_context_key = Some(pending.context_key);
+                    self.last_app_id = pending.app_id;
+                }
+            }
+        }
+
+        // Finish/close of window can end the session for that context.
+        if let EventData::UiAction { kind, .. } = &event.data {
+            if matches!(
+                kind,
+                intime_core::models::UiActionKind::Finish
+                    | intime_core::models::UiActionKind::Close
+            ) {
+                self.close_open(storage, now).await?;
+                self.pending = None;
+            }
+        }
+
+        self.last_activity = Some(now_inst);
+        Ok(self.current_session)
+    }
+
+    fn idle_break(&self, event: &Event, now_inst: Instant) -> bool {
+        let idle = matches!(event.data.name(), "idle_start" | "gap" | "idle_end");
+        let timed_out = self
+            .last_activity
+            .map(|t| now_inst.duration_since(t) >= self.gap)
+            .unwrap_or(false);
+        idle || timed_out
+    }
+
+    async fn close_open(&mut self, storage: &Storage, ended_at: Timestamp) -> Result<()> {
+        let ended = ended_at.as_datetime();
+        if let Some(session_id) = self.current_session.take() {
+            storage
+                .session_repository
+                .close_session(session_id, ended, None)
+                .await?;
+        }
+        self.last_category_id = None;
+        self.last_category_slug = None;
+        self.last_context_key = None;
+        Ok(())
+    }
+}
+
+/// Convenience: build matcher input from event + optional product hints.
+pub fn match_input_from_event(
+    event: &Event,
+    aumid: Option<String>,
+    product_name: Option<String>,
+    display_name: Option<String>,
+    company: Option<String>,
+) -> CategoryMatchInput {
+    CategoryMatchInput {
+        aumid,
+        product_name: product_name.or_else(|| event.metadata.executable_path.clone()),
+        display_name,
+        company,
+        executable_path: event.metadata.executable_path.clone(),
+        window_title: event.metadata.window_title.clone(),
+        url: event.metadata.url.clone(),
+        focused_control_type: event.metadata.focused_control_type.clone(),
+        automation_id: event.metadata.automation_id.clone(),
+    }
+}

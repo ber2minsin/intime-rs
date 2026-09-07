@@ -3,13 +3,17 @@ Long-running process that turns platform events into persisted timeline rows, sc
 ## Flow
 
 1. Platform thread polls `EventSource`
-2. Tracker task persists apps/events and may capture a screenshot
-3. Screenshot policy coalesces rapid duplicate captures (see root README)
-4. Embedding worker stores vectors when a screenshot was taken
+2. Tracker enriches metadata (document/url heuristics), sanitizes by feature flags
+3. App identity is upserted into company/aumid/app/version/signature tables
+4. Heuristic `SessionTracker` attaches `session_id` (category + context) when enabled
+5. Event row is persisted with queryable context columns (+ JSON payload)
+6. Screenshot policy may capture; embedding worker runs only if embeddings enabled
 
 Library entrypoints (for tests and embedding):
 
 - `ScreenshotOrchestrator`
+- `SessionTracker`
+- `CategoryRulesCache`
 - `handle_incoming_event`
 - `start_embedding_worker`
 

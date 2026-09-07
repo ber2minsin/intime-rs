@@ -1,10 +1,16 @@
 use anyhow::{Context, Result};
 use intime_ai::{embedding::EmbeddingService, models::EmbeddingTask};
-use intime_core::models::Event;
-use intime_daemon::{ScreenshotOrchestrator, handle_incoming_event, start_embedding_worker};
+use intime_core::{
+    features::FeatureFlags,
+    models::{Event, EventData},
+};
+use intime_daemon::{
+    CategoryRulesCache, ScreenshotOrchestrator, SessionTracker, handle_incoming_event,
+    start_embedding_worker,
+};
 use intime_platform::{create_capture_engine, create_event_source};
 use intime_storage::{config::StorageConfig, storage::Storage};
-use std::{env, sync::Arc};
+use std::{env, sync::Arc, time::Duration};
 use tokio::sync::{broadcast, mpsc};
 use tracing::{error, info, level_filters::LevelFilter, warn};
 use tracing_subscriber::{
@@ -48,6 +54,14 @@ async fn main() -> Result<()> {
         .await
         .context("failed to connect to storage")?;
 
+    let flags = FeatureFlags::from_env();
+    info!(?flags, "Loaded feature flags");
+
+    let rules = CategoryRulesCache::load(&storage)
+        .await
+        .context("failed to load category activity rules")?;
+    info!("Loaded {} activity rules", rules.len());
+
     let embedding_server_url =
         env::var("EMBEDDING_SERVER_URL").unwrap_or_else(|_| "http://localhost:8000".to_string());
 
@@ -57,27 +71,74 @@ async fn main() -> Result<()> {
     let (embedtx, mut embedrx) = mpsc::channel::<EmbeddingTask>(64);
 
     let tracker_storage = storage.clone();
+    let tracker_flags = flags.clone();
     let mut tracker_rx = evttx.subscribe();
     let tracker_handle = local_set.spawn_local(async move {
         info!("Tracker task started");
-        while let Ok(event) = tracker_rx.recv().await {
-            if let Err(e) = handle_incoming_event(
-                event,
-                &tracker_storage,
-                &mut screenshot_orchestrator,
-                embedtx.clone(),
-            )
-            .await
-            {
-                error!("Failed to process event: {e:#}");
+        let mut sessions = SessionTracker::new(tracker_flags.clone());
+        // Re-capture the last focused page while it stays open (YouTube watch, etc.).
+        let mut last_focus: Option<Arc<Event>> = None;
+        let mut heartbeat = tokio::time::interval(Duration::from_secs(2));
+        heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        // Skip the immediate first tick so we don't double-fire on startup.
+        heartbeat.tick().await;
+
+        loop {
+            tokio::select! {
+                result = tracker_rx.recv() => {
+                    let Ok(event) = result else { break };
+                    if is_heartbeat_source(&event) {
+                        last_focus = Some(event.clone());
+                    }
+                    if let Err(e) = handle_incoming_event(
+                        event,
+                        &tracker_storage,
+                        &mut screenshot_orchestrator,
+                        embedtx.clone(),
+                        &tracker_flags,
+                        &mut sessions,
+                        &rules,
+                    )
+                    .await
+                    {
+                        error!("Failed to process event: {e:#}");
+                    }
+                }
+                _ = heartbeat.tick() => {
+                    let Some(event) = last_focus.clone() else { continue };
+                    if let Err(e) = handle_incoming_event(
+                        event,
+                        &tracker_storage,
+                        &mut screenshot_orchestrator,
+                        embedtx.clone(),
+                        &tracker_flags,
+                        &mut sessions,
+                        &rules,
+                    )
+                    .await
+                    {
+                        error!("Failed to process heartbeat capture: {e:#}");
+                    }
+                }
             }
         }
     });
 
     let embedding_storage = storage.clone();
-    let mut embedding_service =
-        EmbeddingService::new(&embedding_server_url).context("invalid EMBEDDING_SERVER_URL")?;
+    let embeddings_enabled = flags.embeddings_enabled;
     let embedding_handle = tokio::spawn(async move {
+        if !embeddings_enabled {
+            info!("Embeddings disabled; worker idle");
+            while embedrx.recv().await.is_some() {}
+            return;
+        }
+        let mut embedding_service = match EmbeddingService::new(&embedding_server_url) {
+            Ok(s) => s,
+            Err(e) => {
+                error!("invalid EMBEDDING_SERVER_URL: {e:#}");
+                return;
+            }
+        };
         if let Err(e) =
             start_embedding_worker(&mut embedrx, &mut embedding_service, &embedding_storage).await
         {
@@ -126,4 +187,14 @@ async fn main() -> Result<()> {
 
     platform_result.context("platform event loop failed")?;
     Ok(())
+}
+
+fn is_heartbeat_source(event: &Event) -> bool {
+    matches!(
+        event.data,
+        EventData::WindowFocus { .. }
+            | EventData::TitleChange { .. }
+            | EventData::TextChanged { .. }
+            | EventData::AppSeen { .. }
+    ) && event.data.window_handle().is_some()
 }

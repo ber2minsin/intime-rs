@@ -10,10 +10,14 @@ use intime_ai::{
     models::{EmbeddingRequest, EmbeddingResponse, EmbeddingTask, EmbeddingType},
 };
 use intime_core::{
+    features::FeatureFlags,
     models::{AppDetails, Event, EventData, EventMetadata, VersionInfo},
     time::Timestamp,
 };
-use intime_daemon::{ScreenshotOrchestrator, handle_incoming_event, start_embedding_worker};
+use intime_daemon::{
+    CategoryRulesCache, ScreenshotOrchestrator, SessionTracker, handle_incoming_event,
+    start_embedding_worker,
+};
 use intime_platform::{CapturedImage, error::PlatformError, traits::ScreenshotSource};
 use intime_storage::testing::TestDatabase;
 use tokio::sync::mpsc;
@@ -92,6 +96,9 @@ struct PipelineHarness {
     orchestrator: ScreenshotOrchestrator,
     embed_tx: mpsc::Sender<EmbeddingTask>,
     embed_rx: mpsc::Receiver<EmbeddingTask>,
+    flags: FeatureFlags,
+    sessions: SessionTracker,
+    rules: CategoryRulesCache,
 }
 
 impl PipelineHarness {
@@ -113,6 +120,11 @@ impl PipelineHarness {
             interval,
         );
         let (embed_tx, embed_rx) = mpsc::channel::<EmbeddingTask>(16);
+        let flags = FeatureFlags::default();
+        let sessions = SessionTracker::new(flags.clone());
+        let rules = CategoryRulesCache::load(&db.storage)
+            .await
+            .expect("load category rules");
         Self {
             db,
             captures,
@@ -124,6 +136,9 @@ impl PipelineHarness {
             orchestrator,
             embed_tx,
             embed_rx,
+            flags,
+            sessions,
+            rules,
         }
     }
 
@@ -133,6 +148,9 @@ impl PipelineHarness {
             &self.db.storage,
             &mut self.orchestrator,
             self.embed_tx.clone(),
+            &self.flags,
+            &mut self.sessions,
+            &self.rules,
         )
         .await
         .expect("handle event");
@@ -163,7 +181,8 @@ impl Drop for PipelineHarness {
 
 #[tokio::test]
 async fn end_to_end_app_seen_focus_screenshot_and_embedding() {
-    let mut h = PipelineHarness::new(Duration::from_millis(0)).await;
+    // Non-zero interval: duplicate same-page focus must not re-capture.
+    let mut h = PipelineHarness::new(Duration::from_secs(60)).await;
     let details = app_details();
     let fp = details.fingerprint();
 
@@ -504,6 +523,74 @@ async fn text_changed_and_background_events_persist_without_capture() {
     assert!(types.contains(&"background".to_string()));
     assert!(types.contains(&"idle_end".to_string()));
     assert!(types.contains(&"gap".to_string()));
+}
+
+#[tokio::test]
+async fn ui_action_form_submit_persists_as_raw_event() {
+    let mut h = PipelineHarness::new(Duration::from_millis(0)).await;
+    h.flags.screenshots_enabled = false;
+    h.flags.embeddings_enabled = false;
+    let details = app_details();
+    let fp = details.fingerprint();
+
+    h.handle(Event {
+        timestamp: Timestamp::now(),
+        data: EventData::AppSeen {
+            fingerprint: fp,
+            details: details.clone(),
+            window_handle: 11,
+        },
+        metadata: EventMetadata {
+            window_title: Some("Login".into()),
+            ..Default::default()
+        },
+    })
+    .await;
+    h.handle(Event {
+        timestamp: Timestamp::now(),
+        data: EventData::WindowFocus {
+            fingerprint: fp,
+            window_handle: 11,
+        },
+        metadata: EventMetadata {
+            window_title: Some("Login".into()),
+            ..Default::default()
+        },
+    })
+    .await;
+    h.handle(Event {
+        timestamp: Timestamp::now(),
+        data: EventData::UiAction {
+            kind: intime_core::models::UiActionKind::FormSubmit,
+            fingerprint: fp,
+            window_handle: 11,
+            label: Some("Sign in".into()),
+        },
+        metadata: EventMetadata {
+            window_title: Some("Login".into()),
+            focused_element: Some("Sign in".into()),
+            focused_control_type: Some("PushButton".into()),
+            ..Default::default()
+        },
+    })
+    .await;
+
+    let events = h.db.storage.event_repository.list_events(20).await.unwrap();
+    let submit = events
+        .iter()
+        .find(|e| e.event_type == "ui_action")
+        .expect("ui_action event");
+    assert_eq!(submit.focused_element.as_deref(), Some("Sign in"));
+    let payload = submit.payload.as_deref().unwrap_or("");
+    assert!(payload.contains("form_submit") || payload.contains("FormSubmit"));
+
+    let action_table: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='action'",
+    )
+    .fetch_one(&h.db.pool)
+    .await
+    .unwrap();
+    assert_eq!(action_table, 0, "action table should be dropped");
 }
 
 #[tokio::test]

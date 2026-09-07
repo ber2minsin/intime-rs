@@ -7,10 +7,14 @@ use std::{
 use anyhow::{Context, Result, bail};
 use intime_ai::embedding::EmbeddingService;
 use intime_core::{
+    features::FeatureFlags,
     models::{AppDetails, Event, EventData, EventMetadata},
     time::Timestamp,
 };
-use intime_daemon::{ScreenshotOrchestrator, handle_incoming_event, start_embedding_worker};
+use intime_daemon::{
+    CategoryRulesCache, ScreenshotOrchestrator, SessionTracker, handle_incoming_event,
+    start_embedding_worker,
+};
 use intime_storage::testing::TestDatabase;
 use tokio::sync::mpsc;
 
@@ -56,12 +60,25 @@ pub async fn replay_scenario(
 
     let (embed_tx, mut embed_rx) = mpsc::channel::<intime_ai::models::EmbeddingTask>(32);
     let mut fingerprint = None;
+    let flags = FeatureFlags::default();
+    let mut sessions = SessionTracker::new(flags.clone());
+    let rules = CategoryRulesCache::load(&db.storage)
+        .await
+        .context("load category rules")?;
 
     for step in &scenario.steps {
         let event = step_to_event(step, &mut fingerprint)?;
-        handle_incoming_event(Arc::new(event), &db.storage, &mut orchestrator, embed_tx.clone())
-            .await
-            .with_context(|| format!("step {:?}", step))?;
+        handle_incoming_event(
+            Arc::new(event),
+            &db.storage,
+            &mut orchestrator,
+            embed_tx.clone(),
+            &flags,
+            &mut sessions,
+            &rules,
+        )
+        .await
+        .with_context(|| format!("step {:?}", step))?;
     }
     drop(embed_tx);
 

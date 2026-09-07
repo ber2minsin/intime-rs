@@ -46,7 +46,9 @@ impl ScreenshotPolicy {
             return true;
         }
 
-        now.duration_since(*captured_at) >= self.minimum_interval && previous.title != key.title
+        // Same window: title changes and same-page heartbeats both wait for the
+        // interval so we debounce flicker but keep collecting on a stable page.
+        now.duration_since(*captured_at) >= self.minimum_interval
     }
 
     fn record_capture(&mut self, now: Instant, key: ScreenshotKey) {
@@ -56,7 +58,8 @@ impl ScreenshotPolicy {
 
 impl ScreenshotOrchestrator {
     pub fn new(source: Box<dyn ScreenshotSource>) -> Self {
-        Self::with_minimum_interval(source, Duration::from_millis(750))
+        // 2s heartbeat keeps collecting on a stable page (e.g. video + comments).
+        Self::with_minimum_interval(source, Duration::from_secs(2))
     }
 
     pub fn with_minimum_interval(
@@ -70,6 +73,19 @@ impl ScreenshotOrchestrator {
     }
 
     pub fn process_event(&mut self, event: &Event) -> Result<Option<PathBuf>> {
+        // Transient system events skip capture; text_changed is kept so in-page
+        // commenting / typing still gets periodic screenshots via heartbeat.
+        if matches!(
+            event.data,
+            EventData::UiAction { .. }
+                | EventData::Background { .. }
+                | EventData::IdleStart
+                | EventData::IdleEnd
+                | EventData::Gap
+        ) {
+            return Ok(None);
+        }
+
         let Some(handle) = event.data.window_handle() else {
             return Ok(None);
         };
@@ -192,7 +208,11 @@ mod tests {
         policy.record_capture(now, first);
 
         assert!(!policy.should_capture(now + Duration::from_millis(100), &changed));
+        // Title changes still wait for the interval (debounce), then capture.
         assert!(policy.should_capture(now + Duration::from_millis(750), &changed));
+        // Same page: heartbeat re-captures after interval even without title change.
+        policy.record_capture(now + Duration::from_millis(750), changed.clone());
+        assert!(policy.should_capture(now + Duration::from_millis(1500), &changed));
     }
 
     #[test]
