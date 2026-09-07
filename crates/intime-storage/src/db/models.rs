@@ -60,6 +60,7 @@ pub struct SessionRecord {
     pub app_id: Option<i64>,
     pub created_at: DateTime<Utc>,
     pub important: i64,
+    pub ended_reason: Option<String>,
 }
 
 #[derive(Debug, sqlx::FromRow)]

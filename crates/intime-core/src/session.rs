@@ -24,6 +24,34 @@ impl SessionSource {
     }
 }
 
+/// Why a session row was closed — stored on `session.ended_reason`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionEndReason {
+    /// No user activity for the idle timeout (`idle_start`).
+    Idle,
+    /// Explicit platform gap event.
+    Gap,
+    /// Category or context_key changed.
+    ContextChange,
+    /// Discrete finish verb (e.g. media finished).
+    Finish,
+    /// Window / UI close verb.
+    Close,
+}
+
+impl SessionEndReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Gap => "gap",
+            Self::ContextChange => "context_change",
+            Self::Finish => "finish",
+            Self::Close => "close",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
     pub id: i64,

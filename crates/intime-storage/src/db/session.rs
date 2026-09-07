@@ -43,13 +43,18 @@ impl SessionRepository for SqliteRepository {
         session_id: i64,
         ended_at: DateTime<Utc>,
         summary: Option<&str>,
+        ended_reason: Option<&str>,
     ) -> Result<(), StorageError> {
-        sqlx::query("UPDATE session SET ended_at = ?, summary = COALESCE(?, summary) WHERE id = ?")
-            .bind(ended_at)
-            .bind(summary)
-            .bind(session_id)
-            .execute(&self.pool)
-            .await?;
+        sqlx::query(
+            "UPDATE session SET ended_at = ?, summary = COALESCE(?, summary),
+             ended_reason = COALESCE(?, ended_reason) WHERE id = ?",
+        )
+        .bind(ended_at)
+        .bind(summary)
+        .bind(ended_reason)
+        .bind(session_id)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -60,7 +65,7 @@ impl SessionRepository for SqliteRepository {
     ) -> Result<Option<SessionRecord>, StorageError> {
         let record = sqlx::query_as::<_, SessionRecord>(
             "SELECT id, started_at, ended_at, intent, intent_confidence, title, summary, source,
-                    category_id, context_key, app_id, created_at, important
+                    category_id, context_key, app_id, created_at, important, ended_reason
              FROM session
              WHERE context_key = ?
                AND (? IS NULL OR category_id = ?)
@@ -76,7 +81,7 @@ impl SessionRepository for SqliteRepository {
     }
 
     async fn reopen_session(&self, session_id: i64) -> Result<(), StorageError> {
-        sqlx::query("UPDATE session SET ended_at = NULL WHERE id = ?")
+        sqlx::query("UPDATE session SET ended_at = NULL, ended_reason = NULL WHERE id = ?")
             .bind(session_id)
             .execute(&self.pool)
             .await?;
@@ -108,7 +113,7 @@ impl SessionRepository for SqliteRepository {
     async fn get_session(&self, id: i64) -> Result<SessionRecord, StorageError> {
         let record = sqlx::query_as::<_, SessionRecord>(
             "SELECT id, started_at, ended_at, intent, intent_confidence, title, summary, source,
-                    category_id, context_key, app_id, created_at, important
+                    category_id, context_key, app_id, created_at, important, ended_reason
              FROM session WHERE id = ?",
         )
         .bind(id)

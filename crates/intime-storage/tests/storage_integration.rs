@@ -679,6 +679,40 @@ async fn session_and_rules_round_trip() {
     assert_eq!(session.context_key.as_deref(), Some("app:code|doc:pipeline.rs"));
     assert_eq!(session.app_id, Some(app_id));
     assert_eq!(session.important, 0);
+    assert!(session.ended_reason.is_none());
+
+    db.storage
+        .session_repository
+        .close_session(
+            session_id,
+            Timestamp::now().as_datetime(),
+            None,
+            Some("idle"),
+        )
+        .await
+        .unwrap();
+    let session = db
+        .storage
+        .session_repository
+        .get_session(session_id)
+        .await
+        .unwrap();
+    assert!(session.ended_at.is_some());
+    assert_eq!(session.ended_reason.as_deref(), Some("idle"));
+
+    db.storage
+        .session_repository
+        .reopen_session(session_id)
+        .await
+        .unwrap();
+    let session = db
+        .storage
+        .session_repository
+        .get_session(session_id)
+        .await
+        .unwrap();
+    assert!(session.ended_at.is_none());
+    assert!(session.ended_reason.is_none());
 
     db.storage
         .session_repository

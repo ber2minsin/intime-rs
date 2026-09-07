@@ -26,6 +26,7 @@ pub trait SessionRepository: Send + Sync {
         session_id: i64,
         ended_at: DateTime<Utc>,
         summary: Option<&str>,
+        ended_reason: Option<&str>,
     ) -> Result<(), StorageError>;
 
     /// Most recent session for this context (open or closed), if any.
