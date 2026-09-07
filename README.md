@@ -1,3 +1,14 @@
+<p align="center">
+  <img src="banner.svg" alt="intime Banner" width="45%">
+</p>
+<p align="center">
+  <img alt="GitHub Repo stars" src="https://img.shields.io/github/stars/ber2minsin/intime-rs">
+  <img alt="GitHub contributors" src="https://img.shields.io/github/contributors/ber2minsin/intime-rs">
+  <img alt="Issues" src="https://img.shields.io/github/issues/ber2minsin/intime-rs">
+  <img alt="Rust Version" src="https://img.shields.io/badge/rust-1.85+-orange">
+  <img alt="License" src="https://img.shields.io/github/license/ber2minsin/intime-rs">
+</p>
+
 # intime-rs
 
 Local-first activity timeline and semantic search for desktop work.
