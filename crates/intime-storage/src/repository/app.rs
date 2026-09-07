@@ -30,4 +30,7 @@ pub trait AppRepository: Send + Sync {
     async fn get_aumid(&self, aumid_id: i64) -> Result<AumidRecord, StorageError>;
     async fn get_app_company(&self, app_id: i64) -> Result<CompanyRecord, StorageError>;
     async fn get_app_id(&self, fingerprint: Hash) -> Result<i64, StorageError>;
+
+    /// Resolve an app from a loose identity hint (MPRIS player id, aumid fragment, …).
+    async fn find_app_id_by_hint(&self, hint: &str) -> Result<Option<i64>, StorageError>;
 }

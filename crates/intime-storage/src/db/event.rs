@@ -4,7 +4,7 @@ use intime_core::models::Event;
 use crate::{
     db::{SqliteRepository, models::EventRecord},
     error::StorageError,
-    repository::event::EventRepository,
+    repository::event::{EventRepository, ScreenshotCandidate},
 };
 
 #[async_trait]
@@ -26,15 +26,15 @@ impl EventRepository for SqliteRepository {
         } else {
             0_i64
         };
+        let screenshot_tier = screenshot_path.as_ref().map(|_| "full".to_string());
 
         let event_id = sqlx::query_scalar(
             r#"INSERT INTO event(
                 event_type, occured_at, payload, app_id, screenshot_path,
                 window_handle, window_title, process_id, executable_path,
-                focused_element, focused_element_class, focused_control_type, automation_id,
-                document_path, document_name, url, workspace_path, text_changed,
-                session_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                document_path, document_name, workspace_path, text_changed,
+                session_id, screenshot_tier
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             RETURNING id"#,
         )
         .bind(event_name)
@@ -46,16 +46,12 @@ impl EventRepository for SqliteRepository {
         .bind(&event.metadata.window_title)
         .bind(process_id)
         .bind(&event.metadata.executable_path)
-        .bind(&event.metadata.focused_element)
-        .bind(&event.metadata.focused_element_class)
-        .bind(&event.metadata.focused_control_type)
-        .bind(&event.metadata.automation_id)
         .bind(&event.metadata.document_path)
         .bind(&event.metadata.document_name)
-        .bind(&event.metadata.url)
         .bind(&event.metadata.workspace_path)
         .bind(text_changed)
         .bind(session_id)
+        .bind(screenshot_tier)
         .fetch_one(&self.pool)
         .await?;
         Ok(event_id)
@@ -78,6 +74,56 @@ impl EventRepository for SqliteRepository {
         .await?;
         Ok(records)
     }
+
+    async fn list_screenshot_candidates(
+        &self,
+        limit: i64,
+    ) -> Result<Vec<ScreenshotCandidate>, StorageError> {
+        let rows = sqlx::query_as::<_, ScreenshotCandidate>(
+            r#"SELECT
+                e.id AS event_id,
+                e.screenshot_path AS path,
+                e.screenshot_tier AS tier,
+                e.occured_at AS occured_at,
+                COALESCE(s.important, 0) AS session_important
+             FROM event e
+             LEFT JOIN session s ON s.id = e.session_id
+             WHERE e.screenshot_path IS NOT NULL
+             ORDER BY e.occured_at ASC
+             LIMIT ?"#,
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    async fn clear_screenshot(&self, event_id: i64) -> Result<(), StorageError> {
+        sqlx::query(
+            "UPDATE event SET screenshot_path = NULL, screenshot_tier = NULL WHERE id = ?",
+        )
+        .bind(event_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn set_screenshot_tier(
+        &self,
+        event_id: i64,
+        tier: &str,
+        path: Option<&str>,
+    ) -> Result<(), StorageError> {
+        sqlx::query(
+            "UPDATE event SET screenshot_tier = ?, screenshot_path = COALESCE(?, screenshot_path) WHERE id = ?",
+        )
+        .bind(tier)
+        .bind(path)
+        .bind(event_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
 }
 
 const EVENT_SELECT_NO_WHERE: &str = r#"SELECT
@@ -92,16 +138,12 @@ const EVENT_SELECT_NO_WHERE: &str = r#"SELECT
     window_title,
     process_id,
     executable_path,
-    focused_element,
-    focused_element_class,
-    focused_control_type,
-    automation_id,
     document_path,
     document_name,
-    url,
     workspace_path,
     text_changed,
-    session_id
+    session_id,
+    screenshot_tier
 FROM event"#;
 
 const EVENT_SELECT: &str = r#"SELECT
@@ -116,15 +158,11 @@ const EVENT_SELECT: &str = r#"SELECT
     window_title,
     process_id,
     executable_path,
-    focused_element,
-    focused_element_class,
-    focused_control_type,
-    automation_id,
     document_path,
     document_name,
-    url,
     workspace_path,
     text_changed,
-    session_id
+    session_id,
+    screenshot_tier
 FROM event
 WHERE id = ?"#;

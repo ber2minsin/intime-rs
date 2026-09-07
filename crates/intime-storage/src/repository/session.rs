@@ -28,6 +28,26 @@ pub trait SessionRepository: Send + Sync {
         summary: Option<&str>,
     ) -> Result<(), StorageError>;
 
+    /// Most recent session for this context (open or closed), if any.
+    async fn find_session_by_context(
+        &self,
+        context_key: &str,
+        category_id: Option<i64>,
+    ) -> Result<Option<SessionRecord>, StorageError>;
+
+    /// Clear `ended_at` so the session continues (same video / same context).
+    async fn reopen_session(&self, session_id: i64) -> Result<(), StorageError>;
+
+    /// Backfill `app_id` when media started via MPRIS before the browser AppSeen.
+    async fn set_session_app_id(&self, session_id: i64, app_id: i64) -> Result<(), StorageError>;
+
+    /// Pin a session so screenshot retention never compact/deletes its images.
+    async fn set_session_important(
+        &self,
+        session_id: i64,
+        important: bool,
+    ) -> Result<(), StorageError>;
+
     async fn get_session(&self, id: i64) -> Result<SessionRecord, StorageError>;
 
     async fn list_categories(&self) -> Result<Vec<CategoryRecord>, StorageError>;

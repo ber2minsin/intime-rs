@@ -20,13 +20,13 @@ Shared domain types used by every other crate.
 | `window_title` | Window title when known |
 | `process_id` | Owning PID |
 | `executable_path` | Binary path |
-| `focused_element` | Focused control name (UI Automation / a11y) |
-| `focused_element_class` | Control class |
-| `focused_control_type` | Control type string |
-| `automation_id` | Toolkit automation id |
+| `focused_element` | Focused control name (UI Automation / a11y); **payload only** |
+| `focused_element_class` | Control class; **payload only** |
+| `focused_control_type` | Control type string; **payload only** |
+| `automation_id` | Toolkit automation id; **payload only** |
 | `text_changed` | Text activity flag (content not stored) |
 | `document_path` / `document_name` | Active file when known |
-| `url` | Browser URL when known |
+| `url` | Browser URL when known; **payload only** |
 | `workspace_path` | Editor workspace hint |
 
 See `docs/DATA_MODEL.md` for persistence layout.

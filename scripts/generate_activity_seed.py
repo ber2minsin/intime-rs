@@ -298,13 +298,8 @@ def build() -> None:
     # URL / title rules; keep a low-priority fallback only.
     add("media_local", "focused_control_type", "equals", "mpris", 35)
     for player, slug, p in [
-        ("brave", "media_streaming_official", 155),
-        ("firefox", "media_streaming_official", 155),
-        ("chrome", "media_streaming_official", 155),
-        ("chromium", "media_streaming_official", 155),
-        ("edge", "media_streaming_official", 155),
-        ("vivaldi", "media_streaming_official", 155),
-        ("opera", "media_streaming_official", 155),
+        # Browser MPRIS alone is not enough — Twitter/IG tabs also expose MPRIS.
+        # Only dedicated players force a media category from automation_id.
         ("spotify", "music_listening", 155),
         ("vlc", "media_local", 150),
         ("mpv", "media_local", 150),
@@ -380,9 +375,25 @@ def build() -> None:
     # Raise specificity so Shorts/streaming win over generic youtube.com above — already higher prio
     titles(
         "social_long",
-        ["linkedin", "reddit", "hacker news", "substack", "medium.com", "stackoverflow",
-         "twitter", " facebook", "mastodon", "bluesky"],
+        [
+            "linkedin", "reddit", "hacker news", "substack", "medium.com", "stackoverflow",
+            "twitter", " facebook", "mastodon", "bluesky",
+        ],
         95,
+    )
+    # High-priority X / Instagram title matchers (must beat browsing@55).
+    titles(
+        "social_long",
+        [
+            " / x -",
+            " / x",
+            " on x:",
+            "instagram -",
+            "instagram",
+            "x.com",
+            "twitter.com",
+        ],
+        140,
     )
     products("social_long", ["linkedin", "reddit"], 90)
 

@@ -3,8 +3,8 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use intime_core::{
     category::{
-        context_key, event_is_high_value, event_is_meaningful, is_media_category, CategoryHit,
-        CategoryMatchInput,
+        context_key, event_is_high_value, event_is_meaningful, is_media_category,
+        is_social_category, CategoryHit, CategoryMatchInput,
     },
     features::FeatureFlags,
     models::{Event, EventData},
@@ -79,7 +79,8 @@ impl SessionTracker {
         let now = event.timestamp;
 
         // AppSeen enriches identity but must not open/split sessions by itself.
-        // Still attach to the current session when one is already open.
+        // Still attach to the current session when one is already open, and
+        // backfill app_id when media started from MPRIS before the browser was seen.
         if matches!(event.data, EventData::AppSeen { .. }) {
             if let EventData::AppSeen { details, .. } = &event.data {
                 self.last_product_hint = details
@@ -87,11 +88,21 @@ impl SessionTracker {
                     .clone()
                     .or_else(|| (!details.file_path.is_empty()).then(|| details.display_name()));
             }
+            if let Some(id) = app_id {
+                self.last_app_id = Some(id);
+                if let Some(session_id) = self.current_session {
+                    storage
+                        .session_repository
+                        .set_session_app_id(session_id, id)
+                        .await?;
+                }
+            }
             self.last_activity = Some(now_inst);
             return Ok(self.current_session);
         }
 
         let _ = product_hint.or(self.last_product_hint.as_deref());
+        let app_id = app_id.or(self.last_app_id);
 
         let document = event
             .metadata
@@ -109,6 +120,8 @@ impl SessionTracker {
                     EventData::UiAction { label, .. } => label.as_deref(),
                     _ => None,
                 })
+        } else if is_social_category(category_slug) {
+            event.metadata.window_title.as_deref()
         } else {
             None
         };
@@ -175,6 +188,9 @@ impl SessionTracker {
             if title.is_some() {
                 pending.title = title.clone().or(pending.title.clone());
             }
+            if pending.app_id.is_none() {
+                pending.app_id = app_id;
+            }
         }
 
         if self.current_session.is_none() {
@@ -186,24 +202,89 @@ impl SessionTracker {
                 });
             if should_promote {
                 if let Some(pending) = self.pending.take() {
-                    let session_id = storage
+                    // Reuse the same context instead of opening a duplicate row
+                    // (e.g. play → leave briefly → return to the same video).
+                    let session_id = if let Some(existing) = storage
                         .session_repository
-                        .open_session(
-                            pending.started_at.as_datetime(),
-                            Some(&pending.category_slug),
-                            pending.title.as_deref(),
-                            SessionSource::Heuristic.as_str(),
+                        .find_session_by_context(
+                            &pending.context_key,
                             Some(pending.category_id),
-                            Some(&pending.context_key),
-                            pending.app_id,
                         )
-                        .await?;
+                        .await?
+                    {
+                        let reuse_window_secs = if is_media_category(&pending.category_slug) {
+                            // Same show/video resumes even after a longer detour.
+                            2 * 60 * 60
+                        } else {
+                            self.gap.as_secs() as i64
+                        };
+                        let within_reuse = existing
+                            .ended_at
+                            .map(|ended| {
+                                now.as_datetime()
+                                    .signed_duration_since(ended)
+                                    .num_seconds()
+                                    < reuse_window_secs
+                            })
+                            .unwrap_or(true); // still open somehow
+                        if within_reuse {
+                            if existing.ended_at.is_some() {
+                                storage
+                                    .session_repository
+                                    .reopen_session(existing.id)
+                                    .await?;
+                            }
+                            existing.id
+                        } else {
+                            storage
+                                .session_repository
+                                .open_session(
+                                    pending.started_at.as_datetime(),
+                                    Some(&pending.category_slug),
+                                    pending.title.as_deref(),
+                                    SessionSource::Heuristic.as_str(),
+                                    Some(pending.category_id),
+                                    Some(&pending.context_key),
+                                    pending.app_id,
+                                )
+                                .await?
+                        }
+                    } else {
+                        storage
+                            .session_repository
+                            .open_session(
+                                pending.started_at.as_datetime(),
+                                Some(&pending.category_slug),
+                                pending.title.as_deref(),
+                                SessionSource::Heuristic.as_str(),
+                                Some(pending.category_id),
+                                Some(&pending.context_key),
+                                pending.app_id,
+                            )
+                            .await?
+                    };
+                    if let Some(id) = pending.app_id {
+                        storage
+                            .session_repository
+                            .set_session_app_id(session_id, id)
+                            .await?;
+                    }
                     self.current_session = Some(session_id);
                     self.last_category_id = Some(pending.category_id);
                     self.last_category_slug = Some(pending.category_slug);
                     self.last_context_key = Some(pending.context_key);
-                    self.last_app_id = pending.app_id;
+                    self.last_app_id = pending.app_id.or(self.last_app_id);
                 }
+            }
+        }
+
+        if let Some(id) = app_id {
+            self.last_app_id = Some(id);
+            if let Some(session_id) = self.current_session {
+                storage
+                    .session_repository
+                    .set_session_app_id(session_id, id)
+                    .await?;
             }
         }
 

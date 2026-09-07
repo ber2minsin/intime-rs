@@ -128,19 +128,13 @@ async fn poll_player(
         .clone()
         .unwrap_or_else(|| format!("{identity}: {status}"));
 
-    // Help category rules: browsers often expose only the track title via MPRIS,
-    // so fold player id / site hints into the title when URL enrichment is thin.
+    // Keep the raw media title for session merge; player identity lives in
+    // automation_id and URL (when present) drives category rules.
     let window_title = match (&url, title.as_deref()) {
-        (Some(u), Some(t)) if !u.is_empty() => {
-            if u.contains("youtube") || u.contains("youtu.be") {
-                format!("{t} - YouTube")
-            } else {
-                t.to_string()
-            }
+        (Some(u), Some(t)) if u.contains("youtube") || u.contains("youtu.be") => {
+            format!("{t} - YouTube")
         }
-        (None, Some(t)) if is_browser_player(&identity) => {
-            format!("{t} - {identity}")
-        }
+        (_, Some(t)) => t.to_string(),
         _ => label.clone(),
     };
 
@@ -171,17 +165,6 @@ async fn poll_player(
     });
 
     Ok(())
-}
-
-fn is_browser_player(identity: &str) -> bool {
-    let id = identity.to_ascii_lowercase();
-    id.contains("brave")
-        || id.contains("firefox")
-        || id.contains("chrome")
-        || id.contains("chromium")
-        || id.contains("edge")
-        || id.contains("vivaldi")
-        || id.contains("opera")
 }
 
 fn short_player_id(bus_name: &str) -> String {

@@ -608,10 +608,11 @@ async fn persists_queryable_event_context_columns() {
     let stored = db.storage.event_repository.get_event(id).await.unwrap();
     assert_eq!(stored.window_handle, Some(80));
     assert_eq!(stored.process_id, Some(4242));
-    assert_eq!(stored.focused_element.as_deref(), Some("Editor"));
     assert_eq!(stored.document_name.as_deref(), Some("pipeline.rs"));
     assert_eq!(stored.workspace_path.as_deref(), Some("intime-rs"));
     assert_eq!(stored.app_id, Some(app_id));
+    let decoded: Event = serde_json::from_str(stored.payload.as_deref().unwrap()).unwrap();
+    assert_eq!(decoded.metadata.focused_element.as_deref(), Some("Editor"));
 }
 
 #[tokio::test]
@@ -677,6 +678,63 @@ async fn session_and_rules_round_trip() {
     assert_eq!(session.intent.as_deref(), Some("code_editing"));
     assert_eq!(session.context_key.as_deref(), Some("app:code|doc:pipeline.rs"));
     assert_eq!(session.app_id, Some(app_id));
+    assert_eq!(session.important, 0);
+
+    db.storage
+        .session_repository
+        .set_session_important(session_id, true)
+        .await
+        .unwrap();
+    let session = db
+        .storage
+        .session_repository
+        .get_session(session_id)
+        .await
+        .unwrap();
+    assert_eq!(session.important, 1);
+}
+
+#[tokio::test]
+async fn screenshot_tier_and_clear_round_trip() {
+    let db = TestDatabase::new().await.expect("test db");
+    let details = sample_details("code", None);
+    let app_id = register_app(&db, &details).await;
+    let path = Some("data/screenshots/test.jpg".to_string());
+    let id = db
+        .storage
+        .event_repository
+        .add_event(&focus_event(&details, 3), Some(app_id), &path, None)
+        .await
+        .unwrap();
+    let stored = db.storage.event_repository.get_event(id).await.unwrap();
+    assert_eq!(stored.screenshot_path.as_deref(), Some("data/screenshots/test.jpg"));
+    assert_eq!(stored.screenshot_tier.as_deref(), Some("full"));
+
+    db.storage
+        .event_repository
+        .set_screenshot_tier(id, "compact", None)
+        .await
+        .unwrap();
+    let stored = db.storage.event_repository.get_event(id).await.unwrap();
+    assert_eq!(stored.screenshot_tier.as_deref(), Some("compact"));
+    assert!(stored.screenshot_path.is_some());
+
+    db.storage
+        .event_repository
+        .clear_screenshot(id)
+        .await
+        .unwrap();
+    let stored = db.storage.event_repository.get_event(id).await.unwrap();
+    assert!(stored.screenshot_path.is_none());
+    assert!(stored.screenshot_tier.is_none());
+
+    let candidates = db
+        .storage
+        .event_repository
+        .list_screenshot_candidates(10)
+        .await
+        .unwrap();
+    assert!(candidates.iter().all(|c| c.event_id != id));
 }
 
 #[tokio::test]

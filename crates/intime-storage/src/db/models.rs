@@ -27,16 +27,12 @@ pub struct EventRecord {
     pub window_title: Option<String>,
     pub process_id: Option<i64>,
     pub executable_path: Option<String>,
-    pub focused_element: Option<String>,
-    pub focused_element_class: Option<String>,
-    pub focused_control_type: Option<String>,
-    pub automation_id: Option<String>,
     pub document_path: Option<String>,
     pub document_name: Option<String>,
-    pub url: Option<String>,
     pub workspace_path: Option<String>,
     pub text_changed: i64,
     pub session_id: Option<i64>,
+    pub screenshot_tier: Option<String>,
 }
 
 #[derive(sqlx::FromRow, Debug)]
@@ -63,6 +59,7 @@ pub struct SessionRecord {
     pub context_key: Option<String>,
     pub app_id: Option<i64>,
     pub created_at: DateTime<Utc>,
+    pub important: i64,
 }
 
 #[derive(Debug, sqlx::FromRow)]

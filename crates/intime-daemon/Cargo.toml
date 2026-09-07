@@ -18,6 +18,7 @@ serde_json = "1.0.149"
 
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
 tracing-appender = "0.2.5"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 [lib]
 name = "intime_daemon"

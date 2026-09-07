@@ -580,7 +580,9 @@ async fn ui_action_form_submit_persists_as_raw_event() {
         .iter()
         .find(|e| e.event_type == "ui_action")
         .expect("ui_action event");
-    assert_eq!(submit.focused_element.as_deref(), Some("Sign in"));
+    assert_eq!(submit.event_type, "ui_action");
+    let decoded: Event = serde_json::from_str(submit.payload.as_deref().unwrap()).unwrap();
+    assert_eq!(decoded.metadata.focused_element.as_deref(), Some("Sign in"));
     let payload = submit.payload.as_deref().unwrap_or("");
     assert!(payload.contains("form_submit") || payload.contains("FormSubmit"));
 
@@ -622,4 +624,120 @@ async fn repeated_app_seen_does_not_duplicate_app_row() {
         .await
         .unwrap();
     assert_eq!(company_count, 1);
+}
+
+#[tokio::test]
+async fn mpris_play_attaches_browser_app_and_merges_youtube_session() {
+    // Regression: MPRIS fingerprints are synthetic, so play_media used to open a
+    // media session with app_id=NULL and a divergent context key ("… - brave"),
+    // then the Brave tab focus created a second session for the same video.
+    let mut h = PipelineHarness::new(Duration::from_secs(60)).await;
+    h.flags.screenshots_enabled = false;
+    h.flags.embeddings_enabled = false;
+
+    let brave = AppDetails {
+        title: "(1) Stop Playing Kayle Reroll, Play This Instead - YouTube - Brave".into(),
+        file_path: "/opt/brave.com/brave/brave".into(),
+        aumid: Some("brave-browser".into()),
+        company_name: Some("Brave Software".into()),
+        product_name: Some("brave-browser".into()),
+        version_info: None,
+        signature_info: None,
+    };
+    let brave_fp = brave.fingerprint();
+    let mpris_fp = blake3::hash(b"mpris\x1fbrave");
+
+    h.handle(Event {
+        timestamp: Timestamp::now(),
+        data: EventData::AppSeen {
+            fingerprint: brave_fp,
+            details: brave.clone(),
+            window_handle: 80,
+        },
+        metadata: EventMetadata {
+            window_title: Some(brave.title.clone()),
+            executable_path: Some(brave.file_path.clone()),
+            ..Default::default()
+        },
+    })
+    .await;
+
+    let brave_app_id = h
+        .db
+        .storage
+        .app_repository
+        .get_app_id(brave_fp)
+        .await
+        .unwrap();
+
+    h.handle(Event {
+        timestamp: Timestamp::now(),
+        data: EventData::UiAction {
+            kind: intime_core::models::UiActionKind::PlayMedia,
+            fingerprint: mpris_fp,
+            window_handle: 999,
+            label: Some("Stop Playing Kayle Reroll, Play This Instead".into()),
+        },
+        metadata: EventMetadata {
+            window_title: Some("Stop Playing Kayle Reroll, Play This Instead - YouTube".into()),
+            url: Some("https://www.youtube.com/watch?v=abc123".into()),
+            focused_element: Some("Playing".into()),
+            focused_control_type: Some("mpris".into()),
+            automation_id: Some("brave".into()),
+            ..Default::default()
+        },
+    })
+    .await;
+
+    h.handle(Event {
+        timestamp: Timestamp::now(),
+        data: EventData::WindowFocus {
+            fingerprint: brave_fp,
+            window_handle: 80,
+        },
+        metadata: EventMetadata {
+            window_title: Some(
+                "(1) Stop Playing Kayle Reroll, Play This Instead - YouTube - Brave".into(),
+            ),
+            executable_path: Some(brave.file_path.clone()),
+            ..Default::default()
+        },
+    })
+    .await;
+
+    let sessions: Vec<(i64, Option<i64>, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT id, app_id, intent, context_key FROM session ORDER BY id",
+    )
+    .fetch_all(&h.db.pool)
+    .await
+    .unwrap();
+
+    assert_eq!(
+        sessions.len(),
+        1,
+        "expected one merged YouTube session, got {sessions:?}"
+    );
+    let (_id, app_id, intent, context_key) = &sessions[0];
+    assert_eq!(app_id.as_ref(), Some(&brave_app_id), "MPRIS play must resolve Brave app_id");
+    assert_eq!(intent.as_deref(), Some("media_streaming_official"));
+    assert_eq!(
+        context_key.as_deref(),
+        Some("media:stop playing kayle reroll, play this instead")
+    );
+
+    let play_event = h
+        .db
+        .storage
+        .event_repository
+        .list_events(20)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|e| e.event_type == "ui_action")
+        .expect("play_media event");
+    assert_eq!(
+        play_event.app_id,
+        Some(brave_app_id),
+        "persisted MPRIS event must carry Brave app_id"
+    );
 }

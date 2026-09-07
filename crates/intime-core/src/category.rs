@@ -179,6 +179,13 @@ pub fn is_media_category(slug: &str) -> bool {
     )
 }
 
+pub fn is_social_category(slug: &str) -> bool {
+    matches!(
+        slug,
+        "social_long" | "social_short" | "social_messaging" | "content_creation"
+    )
+}
+
 /// Build a stable session context key for merge decisions.
 pub fn context_key(
     category_slug: &str,
@@ -188,8 +195,15 @@ pub fn context_key(
 ) -> String {
     if is_media_category(category_slug) {
         if let Some(title) = media_title.map(str::trim).filter(|s| !s.is_empty()) {
-            return format!("media:{}", normalize_key(title));
+            return format!("media:{}", normalize_media_title(title));
         }
+    }
+    // Social sites: merge on site identity, not every post/tweet title.
+    if is_social_category(category_slug) {
+        if let Some(site) = social_site_key(document.or(media_title)) {
+            return format!("social:{site}");
+        }
+        return format!("social:{category_slug}");
     }
     let doc = document.map(str::trim).filter(|s| !s.is_empty());
     match (app_id, doc) {
@@ -200,6 +214,40 @@ pub fn context_key(
     }
 }
 
+fn social_site_key(hint: Option<&str>) -> Option<String> {
+    let h = hint?.to_ascii_lowercase();
+    if h.contains("x.com") || h.contains("twitter") || h.contains(" / x") || h.contains(" on x:") {
+        return Some("x.com".into());
+    }
+    if h.contains("instagram") {
+        return Some("instagram.com".into());
+    }
+    if h.contains("linkedin") {
+        return Some("linkedin.com".into());
+    }
+    if h.contains("reddit") {
+        return Some("reddit.com".into());
+    }
+    if h.contains("facebook") || h.contains("fb.com") {
+        return Some("facebook.com".into());
+    }
+    if h.contains("tiktok") {
+        return Some("tiktok.com".into());
+    }
+    if h.contains("youtube") {
+        return Some("youtube.com".into());
+    }
+    if h.starts_with("http://") || h.starts_with("https://") {
+        // host only
+        let rest = h.split("://").nth(1)?;
+        let host = rest.split('/').next()?.trim();
+        if !host.is_empty() {
+            return Some(host.trim_start_matches("www.").to_string());
+        }
+    }
+    None
+}
+
 fn normalize_key(s: &str) -> String {
     s.chars()
         .map(|c| if c.is_whitespace() { ' ' } else { c })
@@ -208,6 +256,55 @@ fn normalize_key(s: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ")
         .to_ascii_lowercase()
+}
+
+/// Strip browser / site chrome so MPRIS titles and window titles share one key.
+pub fn normalize_media_title(title: &str) -> String {
+    let mut t = title.trim().to_string();
+    // Drop leading unread counts: "(1) Title"
+    if t.starts_with('(') {
+        if let Some(end) = t.find(')') {
+            let rest = t[end + 1..].trim_start();
+            if !rest.is_empty() {
+                t = rest.to_string();
+            }
+        }
+    }
+    let lower = t.to_ascii_lowercase();
+    const SUFFIXES: &[&str] = &[
+        " - youtube - brave",
+        " - youtube - google chrome",
+        " - youtube - chromium",
+        " - youtube - mozilla firefox",
+        " - youtube - microsoft edge",
+        " - youtube - firefox",
+        " - youtube - chrome",
+        " - youtube - edge",
+        " - youtube - safari",
+        " - youtube - opera",
+        " - youtube - vivaldi",
+        " | youtube",
+        " - youtube",
+        " — youtube",
+        " – youtube",
+        // MPRIS used to append " - brave" / " - firefox" to the track title.
+        " - brave",
+        " - firefox",
+        " - chrome",
+        " - chromium",
+        " - edge",
+        " - safari",
+        " - opera",
+        " - vivaldi",
+        " - spotify",
+    ];
+    for suffix in SUFFIXES {
+        if lower.ends_with(suffix) {
+            t = t[..t.len() - suffix.len()].trim_end().to_string();
+            break;
+        }
+    }
+    normalize_key(&t)
 }
 
 /// Whether an event type is "meaningful" enough to count toward opening a session.
@@ -298,6 +395,40 @@ mod tests {
         assert_eq!(
             context_key("media_local", None, None, Some("Track A")),
             "media:track a"
+        );
+        // MPRIS title and browser tab title must merge.
+        assert_eq!(
+            context_key(
+                "media_streaming_official",
+                None,
+                None,
+                Some("Stop Playing Kayle Reroll, Play This Instead")
+            ),
+            context_key(
+                "media_streaming_official",
+                Some(1),
+                None,
+                Some("(1) Stop Playing Kayle Reroll, Play This Instead - YouTube - Brave")
+            )
+        );
+        assert_eq!(
+            normalize_media_title("Stop Playing Kayle Reroll, Play This Instead - brave"),
+            normalize_media_title(
+                "(1) Stop Playing Kayle Reroll, Play This Instead - YouTube - Brave"
+            )
+        );
+        assert_eq!(
+            context_key("social_long", Some(1), Some("Home / X"), None),
+            "social:x.com"
+        );
+        assert_eq!(
+            context_key(
+                "social_long",
+                Some(1),
+                Some("https://x.com/home"),
+                Some("Home / X - Brave")
+            ),
+            "social:x.com"
         );
     }
 }

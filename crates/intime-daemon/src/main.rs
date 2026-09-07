@@ -1,12 +1,13 @@
 use anyhow::{Context, Result};
 use intime_ai::{embedding::EmbeddingService, models::EmbeddingTask};
+use intime_daemon::{
+    CategoryRulesCache, ScreenshotOrchestrator, SessionTracker, handle_heartbeat_capture,
+    handle_incoming_event, run_screenshot_retention_loop, start_embedding_worker,
+};
 use intime_core::{
     features::FeatureFlags,
     models::{Event, EventData},
-};
-use intime_daemon::{
-    CategoryRulesCache, ScreenshotOrchestrator, SessionTracker, handle_incoming_event,
-    start_embedding_worker,
+    retention::ScreenshotRetentionPolicy,
 };
 use intime_platform::{create_capture_engine, create_event_source};
 use intime_storage::{config::StorageConfig, storage::Storage};
@@ -57,6 +58,9 @@ async fn main() -> Result<()> {
     let flags = FeatureFlags::from_env();
     info!(?flags, "Loaded feature flags");
 
+    let retention_policy = ScreenshotRetentionPolicy::from_env();
+    info!(?retention_policy, "Screenshot retention policy");
+
     let rules = CategoryRulesCache::load(&storage)
         .await
         .context("failed to load category activity rules")?;
@@ -106,14 +110,13 @@ async fn main() -> Result<()> {
                 }
                 _ = heartbeat.tick() => {
                     let Some(event) = last_focus.clone() else { continue };
-                    if let Err(e) = handle_incoming_event(
+                    if let Err(e) = handle_heartbeat_capture(
                         event,
                         &tracker_storage,
                         &mut screenshot_orchestrator,
                         embedtx.clone(),
                         &tracker_flags,
-                        &mut sessions,
-                        &rules,
+                        &sessions,
                     )
                     .await
                     {
@@ -146,6 +149,11 @@ async fn main() -> Result<()> {
         }
     });
 
+    let retention_storage = storage.clone();
+    let retention_handle = tokio::spawn(async move {
+        run_screenshot_retention_loop(retention_storage, retention_policy).await;
+    });
+
     let mut display_rx = evttx.subscribe();
     let display_handle = tokio::spawn(async move {
         while let Ok(event) = display_rx.recv().await {
@@ -174,13 +182,14 @@ async fn main() -> Result<()> {
         }
     });
 
-    let (platform_result, _, _, _) = local_set
+    let (platform_result, _, _, _, _) = local_set
         .run_until(async move {
             tokio::try_join!(
                 platform_handle,
                 tracker_handle,
                 display_handle,
-                embedding_handle
+                embedding_handle,
+                retention_handle
             )
         })
         .await?;

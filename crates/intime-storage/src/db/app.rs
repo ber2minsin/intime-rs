@@ -157,6 +157,29 @@ impl AppRepository for SqliteRepository {
             .await?;
         Ok(id)
     }
+
+    async fn find_app_id_by_hint(&self, hint: &str) -> Result<Option<i64>, StorageError> {
+        let hint = hint.trim();
+        if hint.is_empty() {
+            return Ok(None);
+        }
+        let pattern = format!("%{hint}%");
+        let id: Option<i64> = sqlx::query_scalar(
+            "SELECT a.id FROM app a
+             LEFT JOIN aumid u ON u.id = a.aumid_id
+             WHERE lower(coalesce(u.aumid, '')) LIKE lower(?)
+                OR lower(coalesce(a.product_name, '')) LIKE lower(?)
+                OR lower(a.display_name) LIKE lower(?)
+             ORDER BY a.id ASC
+             LIMIT 1",
+        )
+        .bind(&pattern)
+        .bind(&pattern)
+        .bind(&pattern)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(id)
+    }
 }
 
 impl SqliteRepository {

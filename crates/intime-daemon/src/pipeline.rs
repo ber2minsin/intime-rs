@@ -10,6 +10,7 @@ use intime_core::{
     context::enrich_from_window_title,
     features::FeatureFlags,
     models::{Event, EventData},
+    time::Timestamp,
 };
 use intime_storage::storage::Storage;
 use tokio::sync::mpsc;
@@ -91,7 +92,7 @@ pub async fn handle_incoming_event(
     }
     flags.sanitize_metadata(&mut event.metadata);
 
-    let (app_id, aumid, company, display_name) = match &event.data {
+    let (mut app_id, aumid, company, display_name) = match &event.data {
         EventData::AppSeen {
             fingerprint,
             details,
@@ -119,6 +120,21 @@ pub async fn handle_incoming_event(
             (id, None, None, None)
         }
     };
+
+    // MPRIS fingerprints are synthetic (`mpris\x1f{player}`); resolve the real
+    // browser/player app via automation_id (e.g. "brave" → brave-browser).
+    if app_id.is_none()
+        && event.metadata.focused_control_type.as_deref() == Some("mpris")
+    {
+        if let Some(hint) = event.metadata.automation_id.as_deref() {
+            app_id = storage
+                .app_repository
+                .find_app_id_by_hint(hint)
+                .await
+                .context("resolve mpris player app")?
+                .or(app_id);
+        }
+    }
 
     if event.metadata.executable_path.is_none() {
         if let EventData::AppSeen { details, .. } = &event.data {
@@ -177,6 +193,60 @@ pub async fn handle_incoming_event(
                 .await
                 .context("embedding queue closed")?;
         }
+    }
+
+    Ok(())
+}
+
+/// Periodic same-page capture: only persists when a new screenshot is taken.
+/// Avoids re-inserting the identical focus/title event hundreds of times.
+pub async fn handle_heartbeat_capture(
+    last_focus: Arc<Event>,
+    storage: &Storage,
+    screenshot_orchestrator: &mut ScreenshotOrchestrator,
+    embedding_queue: mpsc::Sender<EmbeddingTask>,
+    flags: &FeatureFlags,
+    sessions: &SessionTracker,
+) -> Result<()> {
+    if !flags.screenshots_enabled {
+        return Ok(());
+    }
+
+    let mut event = (*last_focus).clone();
+    event.timestamp = Timestamp::now();
+
+    let image_path = match screenshot_orchestrator.process_event(&event) {
+        Ok(path) => path.map(|path| path.to_string_lossy().into_owned()),
+        Err(e) => {
+            warn!("Heartbeat screenshot skipped: {e:#}");
+            return Ok(());
+        }
+    };
+    let Some(path) = image_path else {
+        return Ok(());
+    };
+
+    let app_id = if let Some(fp) = event.data.fingerprint() {
+        storage.app_repository.get_app_id(fp).await.ok()
+    } else {
+        None
+    };
+    let session_id = sessions.current_session_id();
+
+    let event_id = storage
+        .event_repository
+        .add_event(&event, app_id, &Some(path.clone()), session_id)
+        .await
+        .context("failed to persist heartbeat event")?;
+
+    if flags.embeddings_enabled {
+        embedding_queue
+            .send(EmbeddingTask {
+                event_id,
+                req: EmbeddingRequest::Image { image_path: path },
+            })
+            .await
+            .context("embedding queue closed")?;
     }
 
     Ok(())
