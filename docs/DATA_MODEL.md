@@ -66,7 +66,7 @@ and document columns; focused UI is available via payload when present.
 | --- | --- |
 | `category` | Flat taxonomy (~48 seeds: coding, BI, HR, social short/long, official/unofficial streaming, …) |
 | `activity_rule` | 1000+ matchers on app / title / url / path / company (`source`: seed, user, llm); regenerate via `scripts/generate_activity_seed.py` |
-| `session` | Merge of same `category_id` + `context_key` (+ `app_id`) after promotion; `important=1` pins screenshots |
+| `session` | Merge of same `category_id` + `context_key` (+ `app_id`) after promotion; `important=1` pins screenshots; `ended_reason` records why it closed (`idle`, `gap`, `context_change`, `finish`, `close`) |
 
 Heuristic `SessionTracker` (daemon):
 
@@ -74,6 +74,9 @@ Heuristic `SessionTracker` (daemon):
 2. Buffer until meaningful duration / event count (or high-value UiAction such as `play_media`)
 3. Open one session row; attach later events with the same context
 4. Keep capturing screenshots on that page (2s heartbeat while focus is stable)
+5. **`IdleChecker`** (`INTIME_IDLE_AFTER_SECS`, default 300): after no real user activity, emit `idle_start`, set `ended_reason=idle`, clear focus, and **stop heartbeats** until the next focus/title/text/ui/app event (`idle_end`)
+
+Heartbeat captures do **not** count as activity — leaving a video paused overnight goes idle and stops filling the screenshot directory.
 
 ### Screenshot retention
 
@@ -121,6 +124,7 @@ Linux fills company / version the same storage path Windows uses:
 | `INTIME_RICH_UI_METADATA` | true | Persist focused UI fields |
 | `INTIME_DOCUMENT_CONTEXT` | true | Parse titles into document/url/workspace |
 | `INTIME_SESSION_GROUPING` | true | Write session rows from category/context merges |
+| `INTIME_IDLE_AFTER_SECS` | 300 | Emit `idle_start`, close session (`ended_reason=idle`), stop screenshots |
 | `INTIME_SESSION_LLM` | false | Future LLM activity-rule / session labeling |
 | `INTIME_SCREENSHOT_RETENTION_ENABLED` | true | Age-tier compact/delete of screenshot files |
 | `INTIME_SCREENSHOT_FULL_QUALITY_DAYS` | 2 | Days before compacting |

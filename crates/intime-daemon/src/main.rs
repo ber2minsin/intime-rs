@@ -1,13 +1,15 @@
 use anyhow::{Context, Result};
 use intime_ai::{embedding::EmbeddingService, models::EmbeddingTask};
-use intime_daemon::{
-    CategoryRulesCache, ScreenshotOrchestrator, SessionTracker, handle_heartbeat_capture,
-    handle_incoming_event, run_screenshot_retention_loop, start_embedding_worker,
-};
 use intime_core::{
     features::FeatureFlags,
-    models::{Event, EventData},
+    models::{Event, EventData, EventMetadata},
     retention::ScreenshotRetentionPolicy,
+    time::Timestamp,
+};
+use intime_daemon::{
+    CategoryRulesCache, HeartbeatOutcome, IdleChecker, IdleTransition, ScreenshotOrchestrator,
+    SessionTracker, handle_heartbeat_capture, handle_incoming_event, run_screenshot_retention_loop,
+    start_embedding_worker,
 };
 use intime_platform::{create_capture_engine, create_event_source};
 use intime_storage::{config::StorageConfig, storage::Storage};
@@ -39,6 +41,14 @@ fn setup_tracing() -> tracing_appender::non_blocking::WorkerGuard {
     guard
 }
 
+fn idle_marker(data: EventData) -> Arc<Event> {
+    Arc::new(Event {
+        timestamp: Timestamp::now(),
+        data,
+        metadata: EventMetadata::default(),
+    })
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
@@ -61,6 +71,12 @@ async fn main() -> Result<()> {
     let retention_policy = ScreenshotRetentionPolicy::from_env();
     info!(?retention_policy, "Screenshot retention policy");
 
+    let idle_checker = IdleChecker::from_env();
+    info!(
+        idle_after_secs = idle_checker.timeout().as_secs(),
+        "Idle checker ready"
+    );
+
     let rules = CategoryRulesCache::load(&storage)
         .await
         .context("failed to load category activity rules")?;
@@ -80,6 +96,7 @@ async fn main() -> Result<()> {
     let tracker_handle = local_set.spawn_local(async move {
         info!("Tracker task started");
         let mut sessions = SessionTracker::new(tracker_flags.clone());
+        let mut idle = idle_checker;
         // Re-capture the last focused page while it stays open (YouTube watch, etc.).
         let mut last_focus: Option<Arc<Event>> = None;
         let mut heartbeat = tokio::time::interval(Duration::from_secs(2));
@@ -91,6 +108,24 @@ async fn main() -> Result<()> {
             tokio::select! {
                 result = tracker_rx.recv() => {
                     let Ok(event) = result else { break };
+
+                    if let Some(IdleTransition::BecameActive) = idle.observe_event(&event) {
+                        info!("User activity resumed; ending idle");
+                        if let Err(e) = handle_incoming_event(
+                            idle_marker(EventData::IdleEnd),
+                            &tracker_storage,
+                            &mut screenshot_orchestrator,
+                            embedtx.clone(),
+                            &tracker_flags,
+                            &mut sessions,
+                            &rules,
+                        )
+                        .await
+                        {
+                            error!("Failed to process idle_end: {e:#}");
+                        }
+                    }
+
                     if is_heartbeat_source(&event) {
                         last_focus = Some(event.clone());
                     }
@@ -109,8 +144,31 @@ async fn main() -> Result<()> {
                     }
                 }
                 _ = heartbeat.tick() => {
+                    if let Some(IdleTransition::BecameIdle) = idle.poll() {
+                        info!("Idle timeout reached; stopping screenshots");
+                        last_focus = None;
+                        if let Err(e) = handle_incoming_event(
+                            idle_marker(EventData::IdleStart),
+                            &tracker_storage,
+                            &mut screenshot_orchestrator,
+                            embedtx.clone(),
+                            &tracker_flags,
+                            &mut sessions,
+                            &rules,
+                        )
+                        .await
+                        {
+                            error!("Failed to process idle_start: {e:#}");
+                        }
+                        continue;
+                    }
+
+                    if idle.is_idle() {
+                        continue;
+                    }
+
                     let Some(event) = last_focus.clone() else { continue };
-                    if let Err(e) = handle_heartbeat_capture(
+                    match handle_heartbeat_capture(
                         event,
                         &tracker_storage,
                         &mut screenshot_orchestrator,
@@ -120,7 +178,13 @@ async fn main() -> Result<()> {
                     )
                     .await
                     {
-                        error!("Failed to process heartbeat capture: {e:#}");
+                        Ok(HeartbeatOutcome::Captured) | Ok(HeartbeatOutcome::Skipped) => {}
+                        Ok(HeartbeatOutcome::StaleFocus) => {
+                            last_focus = None;
+                        }
+                        Err(e) => {
+                            error!("Failed to process heartbeat capture: {e:#}");
+                        }
                     }
                 }
             }

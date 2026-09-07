@@ -8,7 +8,7 @@ use intime_core::{
     },
     features::FeatureFlags,
     models::{Event, EventData},
-    session::{SessionPromotionPolicy, SessionSource},
+    session::{SessionEndReason, SessionPromotionPolicy, SessionSource},
     time::Timestamp,
 };
 use intime_storage::storage::Storage;
@@ -16,14 +16,12 @@ use intime_storage::storage::Storage;
 /// Tracks open sessions by category + context. Discrete verbs stay raw events.
 pub struct SessionTracker {
     flags: FeatureFlags,
-    gap: Duration,
     policy: SessionPromotionPolicy,
     current_session: Option<i64>,
     last_category_id: Option<i64>,
     last_category_slug: Option<String>,
     last_context_key: Option<String>,
     last_app_id: Option<i64>,
-    last_activity: Option<Instant>,
     /// Candidate not yet promoted to a DB session.
     pending: Option<PendingSession>,
     last_product_hint: Option<String>,
@@ -45,14 +43,12 @@ impl SessionTracker {
     pub fn new(flags: FeatureFlags) -> Self {
         Self {
             flags,
-            gap: Duration::from_secs(5 * 60),
             policy: SessionPromotionPolicy::default(),
             current_session: None,
             last_category_id: None,
             last_category_slug: None,
             last_context_key: None,
             last_app_id: None,
-            last_activity: None,
             pending: None,
             last_product_hint: None,
         }
@@ -78,6 +74,13 @@ impl SessionTracker {
         let now_inst = Instant::now();
         let now = event.timestamp;
 
+        // Explicit idle / gap: close any open session and clear pending.
+        if let Some(reason) = end_reason_for_idle_event(event) {
+            self.close_open(storage, now, reason).await?;
+            self.pending = None;
+            return Ok(None);
+        }
+
         // AppSeen enriches identity but must not open/split sessions by itself.
         // Still attach to the current session when one is already open, and
         // backfill app_id when media started from MPRIS before the browser was seen.
@@ -97,7 +100,6 @@ impl SessionTracker {
                         .await?;
                 }
             }
-            self.last_activity = Some(now_inst);
             return Ok(self.current_session);
         }
 
@@ -127,11 +129,7 @@ impl SessionTracker {
         };
 
         let Some(hit) = hit else {
-            // Uncategorized: do not open sessions; still close on idle.
-            if self.idle_break(event, now_inst) {
-                self.close_open(storage, now).await?;
-            }
-            self.last_activity = Some(now_inst);
+            // Uncategorized: do not open sessions.
             return Ok(self.current_session);
         };
 
@@ -143,21 +141,12 @@ impl SessionTracker {
             .or(document)
             .or_else(|| media_title.map(|s| s.to_string()));
 
-        if self.idle_break(event, now_inst) {
-            self.close_open(storage, now).await?;
-            self.pending = None;
-        }
-
-        if matches!(event.data.name(), "idle_start" | "gap") {
-            self.last_activity = Some(now_inst);
-            return Ok(None);
-        }
-
         let category_changed = self.last_category_id != Some(hit.category_id);
         let context_changed = self.last_context_key.as_deref() != Some(ctx.as_str());
 
         if category_changed || context_changed {
-            self.close_open(storage, now).await?;
+            self.close_open(storage, now, SessionEndReason::ContextChange)
+                .await?;
             self.pending = Some(PendingSession {
                 category_id: hit.category_id,
                 category_slug: category_slug.to_string(),
@@ -216,7 +205,7 @@ impl SessionTracker {
                             // Same show/video resumes even after a longer detour.
                             2 * 60 * 60
                         } else {
-                            self.gap.as_secs() as i64
+                            5 * 60
                         };
                         let within_reuse = existing
                             .ended_at
@@ -295,36 +284,45 @@ impl SessionTracker {
                 intime_core::models::UiActionKind::Finish
                     | intime_core::models::UiActionKind::Close
             ) {
-                self.close_open(storage, now).await?;
+                let reason = if matches!(kind, intime_core::models::UiActionKind::Finish) {
+                    SessionEndReason::Finish
+                } else {
+                    SessionEndReason::Close
+                };
+                self.close_open(storage, now, reason).await?;
                 self.pending = None;
             }
         }
 
-        self.last_activity = Some(now_inst);
         Ok(self.current_session)
     }
 
-    fn idle_break(&self, event: &Event, now_inst: Instant) -> bool {
-        let idle = matches!(event.data.name(), "idle_start" | "gap" | "idle_end");
-        let timed_out = self
-            .last_activity
-            .map(|t| now_inst.duration_since(t) >= self.gap)
-            .unwrap_or(false);
-        idle || timed_out
-    }
-
-    async fn close_open(&mut self, storage: &Storage, ended_at: Timestamp) -> Result<()> {
+    async fn close_open(
+        &mut self,
+        storage: &Storage,
+        ended_at: Timestamp,
+        reason: SessionEndReason,
+    ) -> Result<()> {
         let ended = ended_at.as_datetime();
         if let Some(session_id) = self.current_session.take() {
             storage
                 .session_repository
-                .close_session(session_id, ended, None)
+                .close_session(session_id, ended, None, Some(reason.as_str()))
                 .await?;
         }
         self.last_category_id = None;
         self.last_category_slug = None;
         self.last_context_key = None;
         Ok(())
+    }
+}
+
+fn end_reason_for_idle_event(event: &Event) -> Option<SessionEndReason> {
+    match event.data.name() {
+        "idle_start" => Some(SessionEndReason::Idle),
+        "gap" => Some(SessionEndReason::Gap),
+        // idle_end means the user returned; session already closed on idle_start.
+        _ => None,
     }
 }
 

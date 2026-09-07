@@ -741,3 +741,88 @@ async fn mpris_play_attaches_browser_app_and_merges_youtube_session() {
         "persisted MPRIS event must carry Brave app_id"
     );
 }
+
+#[tokio::test]
+async fn idle_start_closes_session_with_ended_reason() {
+    let mut h = PipelineHarness::new(Duration::from_secs(60)).await;
+    h.flags.screenshots_enabled = false;
+    h.flags.embeddings_enabled = false;
+
+    let brave = AppDetails {
+        title: "Cool Video - YouTube - Brave".into(),
+        file_path: "/opt/brave.com/brave/brave".into(),
+        aumid: Some("brave-browser".into()),
+        company_name: Some("Brave Software".into()),
+        product_name: Some("brave-browser".into()),
+        version_info: None,
+        signature_info: None,
+    };
+    let brave_fp = brave.fingerprint();
+    let mpris_fp = blake3::hash(b"mpris\x1fbrave");
+
+    h.handle(Event {
+        timestamp: Timestamp::now(),
+        data: EventData::AppSeen {
+            fingerprint: brave_fp,
+            details: brave.clone(),
+            window_handle: 80,
+        },
+        metadata: EventMetadata {
+            window_title: Some(brave.title.clone()),
+            executable_path: Some(brave.file_path.clone()),
+            ..Default::default()
+        },
+    })
+    .await;
+
+    h.handle(Event {
+        timestamp: Timestamp::now(),
+        data: EventData::UiAction {
+            kind: intime_core::models::UiActionKind::PlayMedia,
+            fingerprint: mpris_fp,
+            window_handle: 999,
+            label: Some("Cool Video".into()),
+        },
+        metadata: EventMetadata {
+            window_title: Some("Cool Video - YouTube".into()),
+            url: Some("https://www.youtube.com/watch?v=idle1".into()),
+            focused_control_type: Some("mpris".into()),
+            automation_id: Some("brave".into()),
+            ..Default::default()
+        },
+    })
+    .await;
+
+    let open: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM session WHERE ended_at IS NULL")
+        .fetch_one(&h.db.pool)
+        .await
+        .unwrap();
+    assert_eq!(open, 1, "expected an open session before idle");
+
+    h.handle(Event {
+        timestamp: Timestamp::now(),
+        data: EventData::IdleStart,
+        metadata: Default::default(),
+    })
+    .await;
+
+    let rows: Vec<(Option<String>,)> =
+        sqlx::query_as("SELECT ended_reason FROM session WHERE ended_at IS NOT NULL")
+            .fetch_all(&h.db.pool)
+            .await
+            .unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].0.as_deref(), Some("idle"));
+
+    let idle_events = h
+        .db
+        .storage
+        .event_repository
+        .list_events(50)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.event_type == "idle_start")
+        .count();
+    assert_eq!(idle_events, 1);
+}

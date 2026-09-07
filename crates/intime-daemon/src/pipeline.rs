@@ -198,6 +198,17 @@ pub async fn handle_incoming_event(
     Ok(())
 }
 
+/// Outcome of a periodic same-page capture tick.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeartbeatOutcome {
+    /// New screenshot persisted.
+    Captured,
+    /// No capture this tick (disabled, debounced, idle, or non-capturable event).
+    Skipped,
+    /// Window handle is gone; caller should drop `last_focus`.
+    StaleFocus,
+}
+
 /// Periodic same-page capture: only persists when a new screenshot is taken.
 /// Avoids re-inserting the identical focus/title event hundreds of times.
 pub async fn handle_heartbeat_capture(
@@ -207,9 +218,9 @@ pub async fn handle_heartbeat_capture(
     embedding_queue: mpsc::Sender<EmbeddingTask>,
     flags: &FeatureFlags,
     sessions: &SessionTracker,
-) -> Result<()> {
+) -> Result<HeartbeatOutcome> {
     if !flags.screenshots_enabled {
-        return Ok(());
+        return Ok(HeartbeatOutcome::Skipped);
     }
 
     let mut event = (*last_focus).clone();
@@ -218,12 +229,16 @@ pub async fn handle_heartbeat_capture(
     let image_path = match screenshot_orchestrator.process_event(&event) {
         Ok(path) => path.map(|path| path.to_string_lossy().into_owned()),
         Err(e) => {
+            if is_stale_window_error(&e) {
+                warn!("Heartbeat focus cleared: {e:#}");
+                return Ok(HeartbeatOutcome::StaleFocus);
+            }
             warn!("Heartbeat screenshot skipped: {e:#}");
-            return Ok(());
+            return Ok(HeartbeatOutcome::Skipped);
         }
     };
     let Some(path) = image_path else {
-        return Ok(());
+        return Ok(HeartbeatOutcome::Skipped);
     };
 
     let app_id = if let Some(fp) = event.data.fingerprint() {
@@ -249,7 +264,16 @@ pub async fn handle_heartbeat_capture(
             .context("embedding queue closed")?;
     }
 
-    Ok(())
+    Ok(HeartbeatOutcome::Captured)
+}
+
+fn is_stale_window_error(err: &anyhow::Error) -> bool {
+    err.chain().any(|c| {
+        c.downcast_ref::<intime_platform::error::PlatformError>()
+            .is_some_and(|p| matches!(p, intime_platform::error::PlatformError::InvalidWindow))
+            || c.to_string()
+                .contains("Window handle is invalid or the window no longer exists")
+    })
 }
 
 pub async fn start_embedding_worker(
