@@ -49,3 +49,7 @@ pub fn create_capture_engine() -> Result<Box<dyn ScreenshotSource>, PlatformErro
 pub fn enrich_metadata_from_atspi(pid: u32, meta: &mut intime_core::models::EventMetadata) {
     linux::atspi_hooks::enrich_metadata_from_atspi(pid, meta);
 }
+
+/// Detect Sway / GNOME / KDE / Hyprland / generic desktop for logging and path selection.
+#[cfg(target_os = "linux")]
+pub use linux::desktop::{DesktopKind, detect_desktop};

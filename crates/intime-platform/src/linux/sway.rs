@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::Mutex;
 
 use intime_core::{
     models::{AppDetails, Event, EventData, EventMetadata, UiActionKind},
@@ -11,6 +12,19 @@ use crate::{
     linux::{atspi_hooks::enrich_metadata_from_atspi, identity::enrich_app_details},
     shared::push_event,
 };
+
+static LAST_SWAY_TITLE: Mutex<Option<(u64, String)>> = Mutex::new(None);
+
+fn should_emit_sway_title(handle: u64, title: &str) -> bool {
+    let mut guard = LAST_SWAY_TITLE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((h, prev)) = guard.as_ref() {
+        if *h == handle && prev == title {
+            return false;
+        }
+    }
+    *guard = Some((handle, title.to_string()));
+    true
+}
 
 pub fn run_event_loop() -> Result<(), PlatformError> {
     let conn = Connection::new()
@@ -82,6 +96,9 @@ fn handle_window_event(change: WindowChange, node: &Node) {
             });
         }
         WindowChange::Title => {
+            if !should_emit_sway_title(window_handle, &details.title) {
+                return;
+            }
             push_event(Event {
                 timestamp,
                 data: EventData::AppSeen {

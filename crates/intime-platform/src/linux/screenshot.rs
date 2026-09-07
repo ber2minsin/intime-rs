@@ -11,9 +11,8 @@ use crate::{
 
 /// Linux screenshot backend.
 ///
-/// On Sway/wlroots, captures a window region with `grim` using geometry from
-/// the Sway tree. Elsewhere, falls back to the XDG Desktop Portal screenshot
-/// API (works on GNOME and other portal backends).
+/// On Sway, captures a window region with `grim` using geometry from the Sway
+/// tree. On GNOME/KDE/Hyprland/generic Wayland, uses the XDG Desktop Portal.
 pub struct LinuxCapture {
     prefer_grim: bool,
 }
@@ -22,9 +21,9 @@ impl LinuxCapture {
     pub fn new() -> Result<Self, PlatformError> {
         let prefer_grim = std::env::var_os("SWAYSOCK").is_some() && grim_available();
         if prefer_grim {
-            tracing::info!("Screenshot backend: grim (wlroots)");
+            tracing::info!("Screenshot backend: grim (Sway)");
         } else {
-            tracing::info!("Screenshot backend: XDG Desktop Portal");
+            tracing::info!("Screenshot backend: XDG Desktop Portal (GNOME/KDE/Wayland)");
         }
         Ok(Self { prefer_grim })
     }

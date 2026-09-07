@@ -5,6 +5,7 @@ use crate::{
 };
 use std::collections::VecDeque;
 use std::path::Path;
+use std::sync::Mutex;
 
 use atspi::{
     AccessibilityConnection, Event as AtspiEvent, FocusEvents, MatchType, ObjectEvents,
@@ -18,13 +19,27 @@ use atspi::{
 };
 use futures_lite::StreamExt;
 use intime_core::{
-    context::guess_ui_action_from_control,
+    context::{guess_ui_action_from_control, sanitize_stale_url},
     models::{AppDetails, Event, EventData, EventMetadata, UiActionKind},
     time::Timestamp,
 };
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use zbus::names::OwnedUniqueName;
+
+/// Drop identical title_change spam from AT-SPI accessible-name churn.
+static LAST_TITLE_EMIT: Mutex<Option<(u64, String)>> = Mutex::new(None);
+
+fn should_emit_title_change(handle: u64, title: &str) -> bool {
+    let mut guard = LAST_TITLE_EMIT.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((h, prev)) = guard.as_ref() {
+        if *h == handle && prev == title {
+            return false;
+        }
+    }
+    *guard = Some((handle, title.to_string()));
+    true
+}
 
 pub fn run_event_loop() -> Result<(), PlatformError> {
     let rt = tokio::runtime::Builder::new_current_thread()
@@ -33,6 +48,61 @@ pub fn run_event_loop() -> Result<(), PlatformError> {
         .map_err(|e| PlatformError::SynchronizationError(e.to_string()))?;
 
     rt.block_on(async_event_loop())
+}
+
+/// Document/URL-only AT-SPI loop — run beside Sway so SPA navigations that do
+/// not change the toplevel title still refresh `metadata.url`.
+pub fn run_document_event_loop() -> Result<(), PlatformError> {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| PlatformError::SynchronizationError(e.to_string()))?;
+
+    rt.block_on(async_document_event_loop())
+}
+
+async fn async_document_event_loop() -> Result<(), PlatformError> {
+    let connection = AccessibilityConnection::new()
+        .await
+        .map_err(|e| PlatformError::Other(anyhow::anyhow!("AT-SPI connection failed: {e}")))?;
+    let conn = connection.connection().clone();
+
+    let _ = connection
+        .register_event::<atspi::events::document::LoadCompleteEvent>()
+        .await;
+    let _ = connection
+        .register_event::<atspi::events::document::ReloadEvent>()
+        .await;
+    let _ = connection
+        .register_event::<atspi::events::document::AttributesChangedEvent>()
+        .await;
+    let _ = connection
+        .register_event::<atspi::events::document::PageChangedEvent>()
+        .await;
+
+    let mut events = connection.event_stream();
+    while let Some(item) = events.next().await {
+        let event = match item {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::debug!("AT-SPI document stream error: {e}");
+                continue;
+            }
+        };
+        if let AtspiEvent::Document(doc) = event {
+            let item = match &doc {
+                atspi::DocumentEvents::LoadComplete(e) => &e.item,
+                atspi::DocumentEvents::Reload(e) => &e.item,
+                atspi::DocumentEvents::AttributesChanged(e) => &e.item,
+                atspi::DocumentEvents::PageChanged(e) => &e.item,
+                _ => continue,
+            };
+            if let Err(e) = emit_document_context(&conn, item).await {
+                tracing::debug!("document enrich failed: {e:?}");
+            }
+        }
+    }
+    Ok(())
 }
 
 async fn async_event_loop() -> Result<(), PlatformError> {
@@ -151,7 +221,7 @@ fn build_metadata(
     process_id: u32,
     element_meta: &ElementMeta,
 ) -> EventMetadata {
-    EventMetadata {
+    let mut metadata = EventMetadata {
         window_title: details.title.clone().into(),
         executable_path: (!details.file_path.is_empty()).then(|| details.file_path.clone()),
         process_id: Some(process_id),
@@ -164,7 +234,9 @@ fn build_metadata(
         automation_id: element_meta.automation_id.clone(),
         url: element_meta.url.clone(),
         ..Default::default()
-    }
+    };
+    sanitize_stale_url(&mut metadata);
+    metadata
 }
 
 async fn emit_focus(
@@ -206,6 +278,9 @@ async fn emit_title_change(
     else {
         return Ok(());
     };
+    if !should_emit_title_change(handle, &details.title) {
+        return Ok(());
+    }
     let fingerprint = details.fingerprint();
     let metadata = build_metadata(&details, process_id, &element_meta);
 
@@ -239,8 +314,14 @@ async fn emit_document_context(
     else {
         return Ok(());
     };
+    // Document attribute churn often repeats the same title; only emit when
+    // the title changed or the URL is new/useful.
+    let title_changed = should_emit_title_change(handle, &details.title);
     let fingerprint = details.fingerprint();
     let metadata = build_metadata(&details, process_id, &element_meta);
+    if !title_changed && metadata.url.is_none() {
+        return Ok(());
+    }
 
     push_event(Event {
         timestamp: Timestamp::now(),
@@ -251,15 +332,17 @@ async fn emit_document_context(
         },
         metadata: metadata.clone(),
     });
-    push_event(Event {
-        timestamp: Timestamp::now(),
-        data: EventData::TitleChange {
-            fingerprint,
-            new_title: details.title,
-            window_handle: handle,
-        },
-        metadata,
-    });
+    if title_changed {
+        push_event(Event {
+            timestamp: Timestamp::now(),
+            data: EventData::TitleChange {
+                fingerprint,
+                new_title: details.title,
+                window_handle: handle,
+            },
+            metadata,
+        });
+    }
     Ok(())
 }
 

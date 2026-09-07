@@ -1,4 +1,5 @@
 pub(crate) mod atspi_hooks;
+pub(crate) mod desktop;
 pub(crate) mod event_source;
 pub(crate) mod identity;
 pub(crate) mod mpris;
