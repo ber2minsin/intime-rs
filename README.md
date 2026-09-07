@@ -32,7 +32,7 @@ Embedding service (optional, for image/text vectors): see `crates/intime-ai/pyth
 
 ## Event metadata
 
-Beyond the typed `EventData` payload (focus/title/text/app_seen/idle/etc.), every event stores an `EventMetadata` blob (also serialized into `event.payload`):
+Beyond the typed `EventData` payload (focus/title/text/app_seen/idle/etc.), every event stores an `EventMetadata` blob (also serialized into `event.payload`) and denormalized SQL columns:
 
 | Field | Purpose |
 | --- | --- |
@@ -44,8 +44,19 @@ Beyond the typed `EventData` payload (focus/title/text/app_seen/idle/etc.), ever
 | `focused_control_type` | Control type (e.g. Edit, Button) |
 | `automation_id` | Stable automation id when the toolkit exposes one |
 | `text_changed` | UI reported text activity without storing typed content |
+| `document_path` / `document_name` | File being edited when known |
+| `url` | Browser URL when extractable |
+| `workspace_path` | Editor workspace / project hint |
 
-Windows fills the focused-element fields via UI Automation. Linux currently focuses on title/process/path from Sway or AT-SPI; richer AT-SPI element fields can be extended later.
+App identity (AUMID, company, version, signature) is normalized into dedicated tables — see `docs/DATA_MODEL.md`.
+
+### Feature flags
+
+Opt out of intrusive or AI-related behavior via env (see `.env.example`):
+
+- `INTIME_SCREENSHOTS_ENABLED` / `INTIME_EMBEDDINGS_ENABLED`
+- `INTIME_RICH_UI_METADATA` / `INTIME_DOCUMENT_CONTEXT`
+- `INTIME_SESSION_GROUPING` / `INTIME_SESSION_LLM`
 
 ## Screenshot policy
 
