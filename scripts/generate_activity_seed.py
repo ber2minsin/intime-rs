@@ -15,14 +15,15 @@ CATEGORIES: list[tuple[str, str, str, str]] = [
     ("database", "Database", "DB clients, warehouses, query UIs", '["developer","data"]'),
     ("devops", "DevOps / cloud", "Infra, CI, containers, cloud consoles", '["developer","sysadmin"]'),
     ("api_testing", "API testing", "REST/GraphQL clients and mocks", '["developer","qa"]'),
-    ("browsing", "Browsing", "Generic web browsing (fallback)", '["general"]'),
-    ("media_streaming_official", "Official streaming", "Licensed TV/movie/music streaming", '["general","media"]'),
-    ("media_streaming_unofficial", "Unofficial streaming", "Free/unofficial film & TV sites", '["general","media"]'),
+    ("browsing", "Other web browsing", "Generic browser fallback when no site-specific category matches", '["general"]'),
+    ("web_search", "Web search", "Search engines and query result pages", '["general"]'),
+    ("media_streaming_official", "Watching series / streaming", "Licensed TV, movies, and video streaming (Netflix, YouTube watch, Prime, …)", '["general","media"]'),
+    ("media_streaming_unofficial", "Unofficial streaming", "Free/unofficial film and TV sites", '["general","media"]'),
     ("media_local", "Local media players", "Local video/audio players and servers", '["general","media"]'),
     ("music_listening", "Music listening", "Music apps and radio", '["general","media"]'),
     ("live_streaming", "Live streaming", "Twitch, Kick, live broadcasts", '["general","creator"]'),
-    ("social_short", "Short-form social", "TikTok, Reels, Shorts, Stories", '["marketing","creator","general"]'),
-    ("social_long", "Long-form social", "YouTube, LinkedIn, blogs, forums", '["marketing","creator","general"]'),
+    ("social_short", "Short-form video", "TikTok, Reels, Shorts, Stories", '["marketing","creator","general"]'),
+    ("social_long", "Social media", "X/Twitter, Instagram, Reddit, LinkedIn, YouTube home/channels, forums", '["marketing","creator","general"]'),
     ("social_messaging", "Social messaging", "DMs and consumer messengers", '["general"]'),
     ("content_creation", "Content creation", "Creator studios, editors, schedulers", '["creator","marketing"]'),
     ("meetings", "Meetings", "Video calls and webinars", '["office","general"]'),
@@ -209,6 +210,21 @@ def build() -> None:
     )
     aumids("browsing", ["brave-browser", "google-chrome", "firefox", "microsoft-edge", "chromium"], 55)
     titles("browsing", [" - brave", " - google chrome", " - chromium", " - mozilla firefox", " - microsoft edge"], 45)
+
+    # --- Web search (beats browsing) ---
+    urls(
+        "web_search",
+        [
+            "google.com/search",
+            "www.google.com/search",
+            "bing.com/search",
+            "duckduckgo.com",
+            "search.brave.com",
+            "search.yahoo.com",
+        ],
+        125,
+    )
+    titles("web_search", [" - google search", "google search", " - bing", " - duckduckgo"], 118)
 
     # --- Official streaming ---
     urls(

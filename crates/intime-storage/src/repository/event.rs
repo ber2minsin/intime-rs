@@ -14,6 +14,19 @@ pub struct ScreenshotCandidate {
     pub session_important: i64,
 }
 
+/// Filters for listing events (timeframe / session / workspace / app).
+#[derive(Debug, Clone, Default)]
+pub struct EventListFilter {
+    pub since: Option<DateTime<Utc>>,
+    pub until: Option<DateTime<Utc>>,
+    pub session_id: Option<i64>,
+    pub app_id: Option<i64>,
+    pub workspace_path: Option<String>,
+    pub document_name_contains: Option<String>,
+    pub event_type: Option<String>,
+    pub limit: i64,
+}
+
 #[async_trait]
 pub trait EventRepository: Send + Sync {
     async fn add_event(
@@ -27,6 +40,12 @@ pub trait EventRepository: Send + Sync {
     async fn get_event(&self, id: i64) -> Result<EventRecord, StorageError>;
 
     async fn list_events(&self, limit: i64) -> Result<Vec<EventRecord>, StorageError>;
+
+    /// Filtered event list (newest-first).
+    async fn list_events_filtered(
+        &self,
+        filter: EventListFilter,
+    ) -> Result<Vec<EventRecord>, StorageError>;
 
     /// Oldest-first events that still reference a screenshot file.
     async fn list_screenshot_candidates(

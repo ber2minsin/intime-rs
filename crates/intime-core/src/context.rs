@@ -31,6 +31,7 @@ pub fn enrich_from_window_title(meta: &mut EventMetadata, product_hint: Option<&
         if meta.document_name.is_none() {
             meta.document_name = Some(strip_browser_suffix(&title));
         }
+        sanitize_stale_url(meta);
         return;
     }
 
@@ -46,6 +47,74 @@ pub fn enrich_from_window_title(meta: &mut EventMetadata, product_hint: Option<&
                 meta.workspace_path = workspace;
             }
         }
+    }
+}
+
+/// Drop a document URL that clearly disagrees with the window title site hint.
+///
+/// AT-SPI sometimes returns a stale DocumentWeb URL from another tab/frame
+/// (e.g. title says Netflix while URL is still github.com).
+pub fn sanitize_stale_url(meta: &mut EventMetadata) {
+    let Some(url) = meta.url.as_deref() else {
+        return;
+    };
+    let Some(title) = meta.window_title.as_deref() else {
+        return;
+    };
+    if url_conflicts_with_title(url, title) {
+        meta.url = None;
+    }
+}
+
+fn url_conflicts_with_title(url: &str, title: &str) -> bool {
+    let Some(url_host) = url_host(url) else {
+        return false;
+    };
+    let title_l = title.to_ascii_lowercase();
+    let host_l = url_host.to_ascii_lowercase();
+
+    // Known site tokens in titles → expected host fragments.
+    const HINTS: &[(&str, &[&str])] = &[
+        ("netflix", &["netflix.com"]),
+        ("youtube", &["youtube.com", "youtu.be"]),
+        ("prime video", &["primevideo.com", "amazon."]),
+        ("disney+", &["disneyplus.com", "disney."]),
+        ("disney plus", &["disneyplus.com", "disney."]),
+        ("hulu", &["hulu.com"]),
+        ("twitch", &["twitch.tv"]),
+        ("instagram", &["instagram.com"]),
+        ("reddit", &["reddit.com"]),
+        ("linkedin", &["linkedin.com"]),
+        ("twitter", &["twitter.com", "x.com"]),
+        (" / x", &["x.com", "twitter.com"]),
+        ("gmail", &["mail.google.com", "gmail.com"]),
+        ("google search", &["google."]),
+        ("tft flow", &["tftflow.com", "tft"]),
+        ("github", &["github.com"]),
+    ];
+
+    let mut title_expects: Option<&[&str]> = None;
+    for (token, hosts) in HINTS {
+        if title_l.contains(token) {
+            title_expects = Some(hosts);
+            break;
+        }
+    }
+    let Some(expected) = title_expects else {
+        return false;
+    };
+    !expected.iter().any(|h| host_l.contains(h))
+}
+
+fn url_host(url: &str) -> Option<String> {
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))?;
+    let host = rest.split('/').next()?.trim();
+    if host.is_empty() {
+        None
+    } else {
+        Some(host.trim_start_matches("www.").to_string())
     }
 }
 
@@ -384,6 +453,28 @@ mod tests {
         };
         enrich_from_window_title(&mut meta, Some("brave-browser"));
         assert_eq!(meta.url.as_deref(), Some("https://example.com/path"));
+    }
+
+    #[test]
+    fn drops_stale_url_that_conflicts_with_title() {
+        let mut meta = EventMetadata {
+            window_title: Some("Community - Netflix - Brave".into()),
+            url: Some("https://github.com/ber2minsin/intime-rs/tree/main".into()),
+            ..Default::default()
+        };
+        sanitize_stale_url(&mut meta);
+        assert!(meta.url.is_none());
+
+        let mut ok = EventMetadata {
+            window_title: Some("Community - Netflix - Brave".into()),
+            url: Some("https://www.netflix.com/title/80100172".into()),
+            ..Default::default()
+        };
+        sanitize_stale_url(&mut ok);
+        assert_eq!(
+            ok.url.as_deref(),
+            Some("https://www.netflix.com/title/80100172")
+        );
     }
 
     #[test]

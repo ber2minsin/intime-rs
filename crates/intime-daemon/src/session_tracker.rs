@@ -1,10 +1,12 @@
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
+use blake3::Hash;
 use intime_core::{
     category::{
-        context_key, event_is_high_value, event_is_meaningful, is_media_category,
-        is_social_category, CategoryHit, CategoryMatchInput,
+        context_key_with_workspace, event_is_high_value, event_is_meaningful_for, is_media_category,
+        is_social_category, is_strong_media_context_key, media_context_equivalent,
+        pick_richer_media_title, session_summary_line, CategoryHit, CategoryMatchInput,
     },
     features::FeatureFlags,
     models::{Event, EventData},
@@ -22,6 +24,9 @@ pub struct SessionTracker {
     last_category_slug: Option<String>,
     last_context_key: Option<String>,
     last_app_id: Option<i64>,
+    /// Fingerprint of the app/window that owns the open or pending session.
+    session_fingerprint: Option<Hash>,
+    last_title: Option<String>,
     /// Candidate not yet promoted to a DB session.
     pending: Option<PendingSession>,
     last_product_hint: Option<String>,
@@ -34,6 +39,7 @@ struct PendingSession {
     context_key: String,
     app_id: Option<i64>,
     title: Option<String>,
+    fingerprint: Option<Hash>,
     started_at: Timestamp,
     first_seen: Instant,
     meaningful_events: u32,
@@ -49,6 +55,8 @@ impl SessionTracker {
             last_category_slug: None,
             last_context_key: None,
             last_app_id: None,
+            session_fingerprint: None,
+            last_title: None,
             pending: None,
             last_product_hint: None,
         }
@@ -73,11 +81,13 @@ impl SessionTracker {
 
         let now_inst = Instant::now();
         let now = event.timestamp;
+        let event_fp = event.data.fingerprint();
 
         // Explicit idle / gap: close any open session and clear pending.
         if let Some(reason) = end_reason_for_idle_event(event) {
             self.close_open(storage, now, reason).await?;
             self.pending = None;
+            self.session_fingerprint = None;
             return Ok(None);
         }
 
@@ -106,24 +116,23 @@ impl SessionTracker {
         let _ = product_hint.or(self.last_product_hint.as_deref());
         let app_id = app_id.or(self.last_app_id);
 
+        let url = event.metadata.url.clone();
+        let workspace = event.metadata.workspace_path.clone();
         let document = event
             .metadata
             .document_path
             .clone()
             .or_else(|| event.metadata.document_name.clone())
-            .or_else(|| event.metadata.url.clone());
+            .or_else(|| url.clone());
 
+        let label = match &event.data {
+            EventData::UiAction { label, .. } => label.as_deref(),
+            _ => None,
+        };
         let media_title = if is_media_category(category_slug) {
-            event
-                .metadata
-                .window_title
-                .as_deref()
-                .or(match &event.data {
-                    EventData::UiAction { label, .. } => label.as_deref(),
-                    _ => None,
-                })
+            pick_richer_media_title(event.metadata.window_title.as_deref(), label)
         } else if is_social_category(category_slug) {
-            event.metadata.window_title.as_deref()
+            event.metadata.window_title.clone()
         } else {
             None
         };
@@ -133,13 +142,42 @@ impl SessionTracker {
             return Ok(self.current_session);
         };
 
-        let ctx = context_key(category_slug, app_id, document.as_deref(), media_title);
+        // Prefer URL (for media/repo ids) over document_name when both exist.
+        let document_for_key = url.as_deref().or(document.as_deref());
+        let mut ctx = context_key_with_workspace(
+            category_slug,
+            app_id,
+            document_for_key,
+            media_title
+                .as_deref()
+                .or(event.metadata.window_title.as_deref()),
+            workspace.as_deref(),
+        );
         let title = event
             .metadata
             .window_title
             .clone()
             .or(document)
-            .or_else(|| media_title.map(|s| s.to_string()));
+            .or(media_title.clone());
+
+        // Keep URL-id keys when a later focus has the same strong title but no URL.
+        if is_media_category(category_slug) {
+            if let Some(prev) = self.last_context_key.as_deref() {
+                let prev_title = self
+                    .pending
+                    .as_ref()
+                    .and_then(|p| p.title.as_deref())
+                    .or(self.last_title.as_deref());
+                if media_context_equivalent(prev, &ctx, prev_title, media_title.as_deref()) {
+                    // Prefer the stronger (URL-id) key when either side has one.
+                    if is_strong_media_context_key(prev)
+                        && (!is_strong_media_context_key(&ctx) || prev.starts_with("media:yt:") || prev.starts_with("media:nf:"))
+                    {
+                        ctx = prev.to_string();
+                    }
+                }
+            }
+        }
 
         let category_changed = self.last_category_id != Some(hit.category_id);
         let context_changed = self.last_context_key.as_deref() != Some(ctx.as_str());
@@ -153,6 +191,7 @@ impl SessionTracker {
                 context_key: ctx.clone(),
                 app_id,
                 title: title.clone(),
+                fingerprint: event_fp,
                 started_at: now,
                 first_seen: now_inst,
                 meaningful_events: 0,
@@ -161,13 +200,18 @@ impl SessionTracker {
             self.last_category_slug = Some(category_slug.to_string());
             self.last_context_key = Some(ctx);
             self.last_app_id = app_id;
+            self.session_fingerprint = event_fp;
         }
 
         let ui_kind = match &event.data {
             EventData::UiAction { kind, .. } => Some(kind.as_str()),
             _ => None,
         };
-        let meaningful = event_is_meaningful(event.data.name());
+        let meaningful = event_is_meaningful_for(
+            event.data.name(),
+            self.last_title.as_deref(),
+            title.as_deref(),
+        );
         let high_value = event_is_high_value(event.data.name(), ui_kind);
 
         if let Some(pending) = self.pending.as_mut() {
@@ -180,6 +224,15 @@ impl SessionTracker {
             if pending.app_id.is_none() {
                 pending.app_id = app_id;
             }
+            if pending.fingerprint.is_none() {
+                pending.fingerprint = event_fp;
+            }
+        }
+        if title.is_some() {
+            self.last_title = title.clone().or(self.last_title.clone());
+        }
+        if event_fp.is_some() {
+            self.session_fingerprint = event_fp.or(self.session_fingerprint);
         }
 
         if self.current_session.is_none() {
@@ -201,12 +254,8 @@ impl SessionTracker {
                         )
                         .await?
                     {
-                        let reuse_window_secs = if is_media_category(&pending.category_slug) {
-                            // Same show/video resumes even after a longer detour.
-                            2 * 60 * 60
-                        } else {
-                            5 * 60
-                        };
+                        let reuse_window_secs =
+                            reuse_window_secs(&pending.category_slug, &pending.context_key);
                         let within_reuse = existing
                             .ended_at
                             .map(|ended| {
@@ -263,6 +312,8 @@ impl SessionTracker {
                     self.last_category_slug = Some(pending.category_slug);
                     self.last_context_key = Some(pending.context_key);
                     self.last_app_id = pending.app_id.or(self.last_app_id);
+                    self.session_fingerprint = pending.fingerprint.or(self.session_fingerprint);
+                    self.last_title = pending.title.or(self.last_title.clone());
                 }
             }
         }
@@ -277,20 +328,41 @@ impl SessionTracker {
             }
         }
 
-        // Finish/close of window can end the session for that context.
-        if let EventData::UiAction { kind, .. } = &event.data {
+        // Finish/close of *this* window can end the session — ignore Finish from
+        // unrelated dialogs (Bluetooth, volume) that would wipe media pending.
+        if let EventData::UiAction { kind, fingerprint, .. } = &event.data {
             if matches!(
                 kind,
                 intime_core::models::UiActionKind::Finish
                     | intime_core::models::UiActionKind::Close
             ) {
-                let reason = if matches!(kind, intime_core::models::UiActionKind::Finish) {
-                    SessionEndReason::Finish
-                } else {
-                    SessionEndReason::Close
-                };
-                self.close_open(storage, now, reason).await?;
-                self.pending = None;
+                let owns_session = self
+                    .session_fingerprint
+                    .map(|fp| fp == *fingerprint)
+                    .unwrap_or(false)
+                    || self
+                        .pending
+                        .as_ref()
+                        .and_then(|p| p.fingerprint)
+                        .map(|fp| fp == *fingerprint)
+                        .unwrap_or(false);
+                // Also allow when we have no fingerprint yet (first events).
+                let no_owner = self.session_fingerprint.is_none()
+                    && self
+                        .pending
+                        .as_ref()
+                        .map(|p| p.fingerprint.is_none())
+                        .unwrap_or(true);
+                if owns_session || (no_owner && self.current_session.is_some()) {
+                    let reason = if matches!(kind, intime_core::models::UiActionKind::Finish) {
+                        SessionEndReason::Finish
+                    } else {
+                        SessionEndReason::Close
+                    };
+                    self.close_open(storage, now, reason).await?;
+                    self.pending = None;
+                    self.session_fingerprint = None;
+                }
             }
         }
 
@@ -305,15 +377,43 @@ impl SessionTracker {
     ) -> Result<()> {
         let ended = ended_at.as_datetime();
         if let Some(session_id) = self.current_session.take() {
+            let summary = match (
+                self.last_category_slug.as_deref(),
+                self.last_context_key.as_deref(),
+            ) {
+                (Some(slug), Some(ctx)) => {
+                    Some(session_summary_line(slug, self.last_title.as_deref(), ctx))
+                }
+                _ => None,
+            };
             storage
                 .session_repository
-                .close_session(session_id, ended, None, Some(reason.as_str()))
+                .close_session(
+                    session_id,
+                    ended,
+                    summary.as_deref(),
+                    Some(reason.as_str()),
+                )
                 .await?;
         }
         self.last_category_id = None;
         self.last_category_slug = None;
         self.last_context_key = None;
         Ok(())
+    }
+}
+
+fn reuse_window_secs(category_slug: &str, context_key: &str) -> i64 {
+    if is_media_category(category_slug) {
+        if is_strong_media_context_key(context_key) {
+            // Same show/video resumes even after a longer detour.
+            2 * 60 * 60
+        } else {
+            // Generic "Netflix" / weak keys must not reopen hours later.
+            2 * 60
+        }
+    } else {
+        5 * 60
     }
 }
 

@@ -22,6 +22,9 @@ pub struct Storage {
 impl Storage {
     pub async fn connect(config: &StorageConfig) -> Result<Self, StorageError> {
         let pool = build_pool(&config.database_file).await?;
+        // Keep schema in sync so session promote (ended_reason, …) never fails
+        // because the daemon was rebuilt ahead of a manual migrate.
+        sqlx::migrate!("./migrations").run(&pool).await?;
         Ok(Self::from_pool(pool))
     }
 

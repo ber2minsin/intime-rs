@@ -4,7 +4,7 @@ use intime_core::models::Event;
 use crate::{
     db::{SqliteRepository, models::EventRecord},
     error::StorageError,
-    repository::event::{EventRepository, ScreenshotCandidate},
+    repository::event::{EventListFilter, EventRepository, ScreenshotCandidate},
 };
 
 #[async_trait]
@@ -69,6 +69,45 @@ impl EventRepository for SqliteRepository {
         let records = sqlx::query_as::<_, EventRecord>(&format!(
             "{EVENT_SELECT_NO_WHERE} ORDER BY id ASC LIMIT ?"
         ))
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(records)
+    }
+
+    async fn list_events_filtered(
+        &self,
+        filter: EventListFilter,
+    ) -> Result<Vec<EventRecord>, StorageError> {
+        let limit = if filter.limit <= 0 { 200 } else { filter.limit };
+        let doc_pat = filter
+            .document_name_contains
+            .as_ref()
+            .map(|s| format!("%{s}%"));
+        let records = sqlx::query_as::<_, EventRecord>(
+            r#"SELECT
+                id, app_id, event_type, occured_at, created_at, payload, screenshot_path,
+                window_handle, window_title, process_id, executable_path,
+                document_path, document_name, workspace_path, text_changed,
+                session_id, screenshot_tier
+             FROM event
+             WHERE (?1 IS NULL OR occured_at >= ?1)
+               AND (?2 IS NULL OR occured_at <= ?2)
+               AND (?3 IS NULL OR session_id = ?3)
+               AND (?4 IS NULL OR app_id = ?4)
+               AND (?5 IS NULL OR workspace_path = ?5)
+               AND (?6 IS NULL OR document_name LIKE ?6)
+               AND (?7 IS NULL OR event_type = ?7)
+             ORDER BY occured_at DESC, id DESC
+             LIMIT ?8"#,
+        )
+        .bind(filter.since)
+        .bind(filter.until)
+        .bind(filter.session_id)
+        .bind(filter.app_id)
+        .bind(filter.workspace_path.as_deref())
+        .bind(doc_pat.as_deref())
+        .bind(filter.event_type.as_deref())
         .bind(limit)
         .fetch_all(&self.pool)
         .await?;

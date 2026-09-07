@@ -8,6 +8,20 @@ use crate::{
     error::StorageError,
 };
 
+/// Filters for listing sessions (AI / UI / MCP query surface).
+#[derive(Debug, Clone, Default)]
+pub struct SessionListFilter {
+    pub since: Option<DateTime<Utc>>,
+    pub until: Option<DateTime<Utc>>,
+    /// Match `session.intent` (category slug).
+    pub intent: Option<String>,
+    /// `context_key LIKE '{prefix}%'` — e.g. `repo:github.com:foo/bar` or `ws:intime-rs`.
+    pub context_key_prefix: Option<String>,
+    pub important_only: bool,
+    pub open_only: bool,
+    pub limit: i64,
+}
+
 #[async_trait]
 pub trait SessionRepository: Send + Sync {
     async fn open_session(
@@ -50,6 +64,12 @@ pub trait SessionRepository: Send + Sync {
     ) -> Result<(), StorageError>;
 
     async fn get_session(&self, id: i64) -> Result<SessionRecord, StorageError>;
+
+    /// Newest-first sessions matching optional filters.
+    async fn list_sessions(
+        &self,
+        filter: SessionListFilter,
+    ) -> Result<Vec<SessionRecord>, StorageError>;
 
     async fn list_categories(&self) -> Result<Vec<CategoryRecord>, StorageError>;
     async fn list_activity_rules(&self) -> Result<Vec<ActivityRuleRecord>, StorageError>;

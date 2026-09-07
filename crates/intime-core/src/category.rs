@@ -186,31 +186,474 @@ pub fn is_social_category(slug: &str) -> bool {
     )
 }
 
+/// IDE / coding categories that should merge on workspace or repo identity.
+pub fn is_coding_category(slug: &str) -> bool {
+    matches!(
+        slug,
+        "code_editing"
+            | "ai_coding"
+            | "terminal"
+            | "database"
+            | "devops"
+            | "api_testing"
+            | "code_collaboration"
+    )
+}
+
+pub fn is_design_category(slug: &str) -> bool {
+    matches!(slug, "design_2d" | "vfx_3d" | "video_editing")
+}
+
+pub fn is_gaming_category(slug: &str) -> bool {
+    matches!(slug, "gaming")
+}
+
 /// Build a stable session context key for merge decisions.
+///
+/// Prefer project-level identity when available so LLM summaries can group
+/// "all work on repo X" or "design file Y" without inventing joins:
+/// - media → URL content id / title
+/// - social → site host
+/// - coding → `ws:{workspace}` or `repo:github:{owner}/{repo}`
+/// - design → `figma:{file_key}` when present
+/// - gaming → `game:{title}` (not launcher chrome)
 pub fn context_key(
     category_slug: &str,
     app_id: Option<i64>,
     document: Option<&str>,
     media_title: Option<&str>,
 ) -> String {
+    context_key_with_workspace(category_slug, app_id, document, media_title, None)
+}
+
+/// Like [`context_key`] but prefers IDE workspace / project name when set.
+pub fn context_key_with_workspace(
+    category_slug: &str,
+    app_id: Option<i64>,
+    document: Option<&str>,
+    media_title: Option<&str>,
+    workspace: Option<&str>,
+) -> String {
     if is_media_category(category_slug) {
-        if let Some(title) = media_title.map(str::trim).filter(|s| !s.is_empty()) {
-            return format!("media:{}", normalize_media_title(title));
-        }
+        return media_context_key(document, media_title);
     }
-    // Social sites: merge on site identity, not every post/tweet title.
     if is_social_category(category_slug) {
         if let Some(site) = social_site_key(document.or(media_title)) {
             return format!("social:{site}");
         }
         return format!("social:{category_slug}");
     }
+
+    // Repo / design / project keys win over raw document paths.
+    if let Some(project) = project_context_key(category_slug, document, workspace, media_title) {
+        return project;
+    }
+
+    if is_gaming_category(category_slug) {
+        if let Some(game) = gaming_context_key(document, media_title) {
+            return game;
+        }
+    }
+
     let doc = document.map(str::trim).filter(|s| !s.is_empty());
     match (app_id, doc) {
         (Some(app), Some(d)) => format!("app:{app}|doc:{}", normalize_key(d)),
         (Some(app), None) => format!("app:{app}"),
         (None, Some(d)) => format!("doc:{}", normalize_key(d)),
         (None, None) => format!("cat:{category_slug}"),
+    }
+}
+
+/// Project-level identity for coding / design / VCS browsing.
+pub fn project_context_key(
+    category_slug: &str,
+    document_or_url: Option<&str>,
+    workspace: Option<&str>,
+    title: Option<&str>,
+) -> Option<String> {
+    let hint = document_or_url.or(title);
+    if let Some(repo) = parse_git_host_repo(hint) {
+        // Issues/projects boards stay page-level via caller category; still
+        // group by repo for summarization.
+        return Some(format!("repo:{repo}"));
+    }
+    if is_design_category(category_slug) || category_slug == "browsing" || category_slug == "content_creation"
+    {
+        if let Some(key) = parse_figma_file_key(hint) {
+            return Some(format!("figma:{key}"));
+        }
+    }
+    if is_coding_category(category_slug) {
+        if let Some(ws) = workspace.map(str::trim).filter(|s| !s.is_empty()) {
+            return Some(format!("ws:{}", normalize_key(ws)));
+        }
+        // Editor title "file — workspace — Cursor" without enriched workspace.
+        if let Some(ws) = workspace_from_editor_title(title) {
+            return Some(format!("ws:{}", normalize_key(&ws)));
+        }
+    }
+    None
+}
+
+fn gaming_context_key(document: Option<&str>, title: Option<&str>) -> Option<String> {
+    let raw = title.or(document)?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let n = normalize_media_title(raw);
+    if is_weak_launcher_title(&n) {
+        return None;
+    }
+    Some(format!("game:{n}"))
+}
+
+fn is_weak_launcher_title(normalized: &str) -> bool {
+    matches!(
+        normalized,
+        "steam"
+            | "steam big picture"
+            | "epic games launcher"
+            | "epic games"
+            | "riot client"
+            | "battle.net"
+            | "battle.net launcher"
+            | "ubisoft connect"
+            | "ea app"
+            | "ea desktop"
+            | "gog galaxy"
+            | "lutris"
+            | "heroic games launcher"
+            | "heroic"
+            | "xbox"
+            | "geforce now"
+    )
+}
+
+/// Parse `github.com/owner/repo` (and GitLab/Bitbucket) into `host:owner/repo`.
+pub fn parse_git_host_repo(hint: Option<&str>) -> Option<String> {
+    let h = hint?.trim();
+    if h.is_empty() {
+        return None;
+    }
+    let lower = h.to_ascii_lowercase();
+    for host in ["github.com", "gitlab.com", "bitbucket.org", "codeberg.org"] {
+        let Some(idx) = lower.find(host) else {
+            continue;
+        };
+        let after = h.get(idx + host.len()..)?;
+        let after = after.trim_start_matches('/');
+        let mut parts = after.split('/');
+        let owner = parts.next()?.trim();
+        let repo_raw = parts.next()?.trim();
+        let repo = repo_raw
+            .trim_end_matches(".git")
+            .split('?')
+            .next()?
+            .split('#')
+            .next()?
+            .trim();
+        if owner.is_empty() || repo.is_empty() {
+            continue;
+        }
+        if matches!(
+            owner,
+            "features"
+                | "pricing"
+                | "enterprise"
+                | "about"
+                | "login"
+                | "signup"
+                | "security"
+                | "settings"
+                | "notifications"
+                | "marketplace"
+                | "explore"
+                | "topics"
+                | "orgs"
+                | "pulls"
+                | "issues"
+                | "new"
+                | "organizations"
+        ) {
+            continue;
+        }
+        if !owner
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+            || !repo
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+        {
+            continue;
+        }
+        return Some(format!("{host}:{owner}/{repo}"));
+    }
+    None
+}
+
+pub fn parse_figma_file_key(hint: Option<&str>) -> Option<String> {
+    let h = hint?.trim();
+    let lower = h.to_ascii_lowercase();
+    for marker in ["/file/", "/design/", "/proto/", "/board/"] {
+        if let Some(idx) = lower.find(marker) {
+            let start = idx + marker.len();
+            let rest = h.get(start..)?;
+            let key = rest
+                .split('/')
+                .next()?
+                .split('?')
+                .next()?
+                .trim();
+            if key.len() >= 6
+                && key
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            {
+                return Some(key.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn workspace_from_editor_title(title: Option<&str>) -> Option<String> {
+    let t = title?.trim();
+    for sep in [" — ", " - "] {
+        let parts: Vec<&str> = t.split(sep).map(str::trim).filter(|p| !p.is_empty()).collect();
+        // "file — workspace — Cursor" or "file — workspace — Visual Studio Code"
+        if parts.len() >= 3 {
+            let last = parts.last()?.to_ascii_lowercase();
+            if last.contains("cursor")
+                || last.contains("code")
+                || last.contains("zed")
+                || last.contains("idea")
+                || last.contains("jetbrains")
+                || last.contains("sublime")
+                || last.contains("neovim")
+                || last.contains("vim")
+            {
+                return Some(parts[1].to_string());
+            }
+        }
+    }
+    None
+}
+
+/// One-line session summary for closed rows (LLM / UI friendly).
+pub fn session_summary_line(
+    category_slug: &str,
+    title: Option<&str>,
+    context_key: &str,
+) -> String {
+    let title_bit = title
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| {
+            let n = normalize_media_title(s);
+            if n.len() > 80 {
+                format!("{}…", &n[..77])
+            } else {
+                n
+            }
+        })
+        .unwrap_or_else(|| context_key.to_string());
+    format!("{category_slug} · {title_bit} · {context_key}")
+}
+
+fn media_context_key(document_or_url: Option<&str>, media_title: Option<&str>) -> String {
+    if let Some(id) = media_content_id(document_or_url) {
+        return id;
+    }
+    let normalized = media_title
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(normalize_media_title)
+        .filter(|s| !s.is_empty());
+    if let Some(title) = normalized {
+        if !is_weak_media_title(&title) {
+            return format!("media:{title}");
+        }
+        // Weak chrome title: still try URL path as a last resort identity.
+        if let Some(url) = document_or_url.map(str::trim).filter(|u| looks_like_url(u)) {
+            return format!("media:url:{}", normalize_key(url));
+        }
+        return format!("media:weak:{title}");
+    }
+    if let Some(url) = document_or_url.map(str::trim).filter(|u| looks_like_url(u)) {
+        return format!("media:url:{}", normalize_key(url));
+    }
+    "media:unknown".into()
+}
+
+/// Extract a stable content id from a media URL when possible.
+pub fn media_content_id(url_or_doc: Option<&str>) -> Option<String> {
+    let raw = url_or_doc?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    // YouTube watch / short / embed / youtu.be
+    if let Some(id) = youtube_video_id(raw) {
+        return Some(format!("media:yt:{id}"));
+    }
+    // Netflix title / watch paths: /title/80100172 or /watch/80100172
+    let lower = raw.to_ascii_lowercase();
+    if lower.contains("netflix.com") {
+        if let Some(id) = path_id_after(raw, &["/title/", "/watch/", "/Title/", "/Watch/"]) {
+            return Some(format!("media:nf:{id}"));
+        }
+    }
+    None
+}
+
+fn youtube_video_id(url: &str) -> Option<String> {
+    let lower = url.to_ascii_lowercase();
+    if let Some(idx) = lower.find("youtu.be/") {
+        let start = idx + "youtu.be/".len();
+        let id = extract_id_at(url, start)?;
+        if is_plausible_yt_id(&id) {
+            return Some(id);
+        }
+    }
+    for marker in ["watch?v=", "watch?vi=", "&v=", "?v=", "/embed/", "/shorts/"] {
+        if let Some(idx) = lower.find(marker) {
+            let start = idx + marker.len();
+            let id = extract_id_at(url, start)?;
+            if is_plausible_yt_id(&id) {
+                return Some(id);
+            }
+        }
+    }
+    None
+}
+
+fn extract_id_at(url: &str, start: usize) -> Option<String> {
+    let rest = url.get(start..)?;
+    let id = rest
+        .split(|c| c == '?' || c == '/' || c == '&' || c == '#')
+        .next()?
+        .trim();
+    if id.is_empty() {
+        None
+    } else {
+        Some(id.to_string())
+    }
+}
+
+fn is_plausible_yt_id(id: &str) -> bool {
+    let len = id.len();
+    (6..=20).contains(&len) && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+fn path_id_after(url: &str, markers: &[&str]) -> Option<String> {
+    let lower = url.to_ascii_lowercase();
+    for marker in markers {
+        let marker_l = marker.to_ascii_lowercase();
+        if let Some(idx) = lower.find(&marker_l) {
+            let start = idx + marker.len();
+            if let Some(id) = extract_id_at(url, start) {
+                if id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+                    return Some(id);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn looks_like_url(s: &str) -> bool {
+    let l = s.to_ascii_lowercase();
+    l.starts_with("http://") || l.starts_with("https://")
+}
+
+/// Titles that are only site/browser chrome — not a specific video/show.
+pub fn is_weak_media_title(normalized: &str) -> bool {
+    matches!(
+        normalized,
+        "youtube"
+            | "netflix"
+            | "home - netflix"
+            | "home"
+            | "prime video"
+            | "amazon prime video"
+            | "disney+"
+            | "disney plus"
+            | "hulu"
+            | "twitch"
+            | "spotify"
+            | "youtube music"
+            | "media"
+            | "unknown"
+    ) || normalized.starts_with("home - ")
+        && matches!(
+            normalized.strip_prefix("home - ").unwrap_or(""),
+            "netflix" | "youtube" | "prime video" | "hulu" | "disney+" | "disney plus"
+        )
+}
+
+/// Prefer URL-id keys (`media:yt:…` / `media:nf:…`) over title keys for reopen.
+pub fn is_strong_media_context_key(key: &str) -> bool {
+    key.starts_with("media:yt:")
+        || key.starts_with("media:nf:")
+        || (key.starts_with("media:")
+            && !key.starts_with("media:weak:")
+            && !key.starts_with("media:url:")
+            && !key.starts_with("media:unknown")
+            && !is_weak_media_title(key.trim_start_matches("media:")))
+}
+
+/// Whether two media context keys refer to the same content.
+///
+/// Allows merging a URL-id key with a strong title key when the normalized
+/// titles match (MPRIS play with watch URL + later browser focus without URL).
+pub fn media_context_equivalent(
+    prev_key: &str,
+    new_key: &str,
+    prev_title: Option<&str>,
+    new_title: Option<&str>,
+) -> bool {
+    if prev_key == new_key {
+        return true;
+    }
+    if !(prev_key.starts_with("media:") && new_key.starts_with("media:")) {
+        return false;
+    }
+    let prev_n = prev_title
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(normalize_media_title);
+    let new_n = new_title
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(normalize_media_title);
+    match (prev_n, new_n) {
+        (Some(a), Some(b)) if a == b && !is_weak_media_title(&a) => true,
+        _ => false,
+    }
+}
+
+/// Pick the richer of window title vs MPRIS/UI label for media identity.
+pub fn pick_richer_media_title(window_title: Option<&str>, label: Option<&str>) -> Option<String> {
+    let win = window_title.map(str::trim).filter(|s| !s.is_empty());
+    let lab = label.map(str::trim).filter(|s| !s.is_empty());
+    match (win, lab) {
+        (Some(w), Some(l)) => {
+            let nw = normalize_media_title(w);
+            let nl = normalize_media_title(l);
+            let w_weak = is_weak_media_title(&nw);
+            let l_weak = is_weak_media_title(&nl);
+            if w_weak && !l_weak {
+                Some(l.to_string())
+            } else if l_weak && !w_weak {
+                Some(w.to_string())
+            } else if nl.len() > nw.len() {
+                Some(l.to_string())
+            } else {
+                Some(w.to_string())
+            }
+        }
+        (Some(w), None) => Some(w.to_string()),
+        (None, Some(l)) => Some(l.to_string()),
+        (None, None) => None,
     }
 }
 
@@ -287,6 +730,19 @@ pub fn normalize_media_title(title: &str) -> String {
         " - youtube",
         " — youtube",
         " – youtube",
+        " - netflix - brave",
+        " - netflix - google chrome",
+        " - netflix - firefox",
+        " - netflix - chrome",
+        " - netflix - edge",
+        " - netflix - safari",
+        " - netflix",
+        " - prime video - brave",
+        " - prime video",
+        " - disney+ - brave",
+        " - disney+",
+        " - hulu - brave",
+        " - hulu",
         // MPRIS used to append " - brave" / " - firefox" to the track title.
         " - brave",
         " - firefox",
@@ -308,6 +764,9 @@ pub fn normalize_media_title(title: &str) -> String {
 }
 
 /// Whether an event type is "meaningful" enough to count toward opening a session.
+///
+/// Callers that already know a `title_change` is a duplicate of the current
+/// title should skip counting it (see [`event_is_meaningful_for`]).
 pub fn event_is_meaningful(event_type: &str) -> bool {
     matches!(
         event_type,
@@ -317,6 +776,20 @@ pub fn event_is_meaningful(event_type: &str) -> bool {
             | "ui_action"
             | "idle_end"
     )
+}
+
+/// `title_change` is only meaningful when the normalized title actually changed.
+pub fn event_is_meaningful_for(
+    event_type: &str,
+    prev_title: Option<&str>,
+    new_title: Option<&str>,
+) -> bool {
+    if event_type == "title_change" {
+        let prev = prev_title.map(normalize_media_title).unwrap_or_default();
+        let new = new_title.map(normalize_media_title).unwrap_or_default();
+        return !new.is_empty() && prev != new;
+    }
+    event_is_meaningful(event_type)
 }
 
 /// High-value events that can open a session immediately (no duration wait).
@@ -429,6 +902,135 @@ mod tests {
                 Some("Home / X - Brave")
             ),
             "social:x.com"
+        );
+    }
+
+    #[test]
+    fn context_key_prefers_youtube_and_netflix_ids() {
+        assert_eq!(
+            context_key(
+                "media_streaming_official",
+                None,
+                Some("https://www.youtube.com/watch?v=abc123XYZ"),
+                Some("Some Video - YouTube - Brave")
+            ),
+            "media:yt:abc123XYZ"
+        );
+        assert_eq!(
+            context_key(
+                "media_streaming_official",
+                None,
+                Some("https://www.netflix.com/title/80100172"),
+                Some("Community - Netflix - Brave")
+            ),
+            "media:nf:80100172"
+        );
+        assert_eq!(
+            context_key(
+                "media_streaming_official",
+                None,
+                None,
+                Some("Netflix - Brave")
+            ),
+            "media:weak:netflix"
+        );
+        assert!(is_weak_media_title(&normalize_media_title("Home - Netflix - Brave")));
+        assert!(!is_weak_media_title(&normalize_media_title(
+            "Community - Netflix - Brave"
+        )));
+    }
+
+    #[test]
+    fn media_context_equivalent_merges_url_and_title_keys() {
+        assert!(media_context_equivalent(
+            "media:yt:abc123",
+            "media:stop playing kayle reroll, play this instead",
+            Some("Stop Playing Kayle Reroll, Play This Instead"),
+            Some("(1) Stop Playing Kayle Reroll, Play This Instead - YouTube - Brave"),
+        ));
+        assert!(!media_context_equivalent(
+            "media:yt:abc123",
+            "media:other video",
+            Some("Video A"),
+            Some("Video B"),
+        ));
+        assert!(!is_strong_media_context_key("media:weak:netflix"));
+        assert!(is_strong_media_context_key("media:yt:abc123"));
+        assert!(is_strong_media_context_key(
+            "media:stop playing kayle reroll, play this instead"
+        ));
+    }
+
+    #[test]
+    fn duplicate_title_change_is_not_meaningful() {
+        assert!(!event_is_meaningful_for(
+            "title_change",
+            Some("Same - YouTube - Brave"),
+            Some("Same - YouTube - Brave"),
+        ));
+        assert!(event_is_meaningful_for(
+            "title_change",
+            Some("Video A - YouTube - Brave"),
+            Some("Video B - YouTube - Brave"),
+        ));
+        assert!(event_is_meaningful_for("window_focus", None, None));
+    }
+
+    #[test]
+    fn repo_and_workspace_context_keys() {
+        assert_eq!(
+            parse_git_host_repo(Some("https://github.com/ber2minsin/intime-rs/tree/main")),
+            Some("github.com:ber2minsin/intime-rs".into())
+        );
+        assert_eq!(
+            context_key_with_workspace(
+                "ai_coding",
+                Some(1),
+                Some("pipeline.rs"),
+                Some("pipeline.rs — intime-rs — Cursor"),
+                Some("intime-rs"),
+            ),
+            "ws:intime-rs"
+        );
+        assert_eq!(
+            context_key_with_workspace(
+                "code_editing",
+                Some(1),
+                Some("https://github.com/foo/bar/pull/12"),
+                None,
+                None,
+            ),
+            "repo:github.com:foo/bar"
+        );
+        assert_eq!(
+            parse_figma_file_key(Some("https://www.figma.com/file/AbCdEf123456/My-Design")),
+            Some("AbCdEf123456".into())
+        );
+        assert_eq!(
+            context_key_with_workspace(
+                "design_2d",
+                Some(1),
+                Some("https://www.figma.com/design/AbCdEf123456/Foo"),
+                None,
+                None,
+            ),
+            "figma:AbCdEf123456"
+        );
+        assert_eq!(
+            context_key_with_workspace(
+                "gaming",
+                Some(1),
+                None,
+                Some("Counter-Strike 2"),
+                None,
+            ),
+            "game:counter-strike 2"
+        );
+        assert!(
+            context_key_with_workspace("gaming", Some(1), None, Some("Steam"), None)
+                .starts_with("app:")
+                || context_key_with_workspace("gaming", Some(1), None, Some("Steam"), None)
+                    .starts_with("cat:")
         );
     }
 }

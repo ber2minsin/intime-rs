@@ -89,6 +89,7 @@ pub async fn handle_incoming_event(
 
     if flags.document_context {
         enrich_from_window_title(&mut event.metadata, product_hint.as_deref());
+        intime_core::context::sanitize_stale_url(&mut event.metadata);
     }
     flags.sanitize_metadata(&mut event.metadata);
 

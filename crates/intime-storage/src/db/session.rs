@@ -7,7 +7,7 @@ use crate::{
         models::{ActivityRuleRecord, CategoryRecord, SessionRecord},
     },
     error::StorageError,
-    repository::session::SessionRepository,
+    repository::session::{SessionListFilter, SessionRepository},
 };
 
 #[async_trait]
@@ -120,6 +120,40 @@ impl SessionRepository for SqliteRepository {
         .fetch_one(&self.pool)
         .await?;
         Ok(record)
+    }
+
+    async fn list_sessions(
+        &self,
+        filter: SessionListFilter,
+    ) -> Result<Vec<SessionRecord>, StorageError> {
+        let limit = if filter.limit <= 0 { 100 } else { filter.limit };
+        let prefix = filter
+            .context_key_prefix
+            .as_ref()
+            .map(|p| format!("{p}%"));
+        let records = sqlx::query_as::<_, SessionRecord>(
+            "SELECT id, started_at, ended_at, intent, intent_confidence, title, summary, source,
+                    category_id, context_key, app_id, created_at, important, ended_reason
+             FROM session
+             WHERE (?1 IS NULL OR started_at >= ?1)
+               AND (?2 IS NULL OR started_at <= ?2)
+               AND (?3 IS NULL OR intent = ?3)
+               AND (?4 IS NULL OR context_key LIKE ?4)
+               AND (?5 = 0 OR important = 1)
+               AND (?6 = 0 OR ended_at IS NULL)
+             ORDER BY started_at DESC, id DESC
+             LIMIT ?7",
+        )
+        .bind(filter.since)
+        .bind(filter.until)
+        .bind(filter.intent.as_deref())
+        .bind(prefix.as_deref())
+        .bind(if filter.important_only { 1_i64 } else { 0_i64 })
+        .bind(if filter.open_only { 1_i64 } else { 0_i64 })
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(records)
     }
 
     async fn list_categories(&self) -> Result<Vec<CategoryRecord>, StorageError> {
