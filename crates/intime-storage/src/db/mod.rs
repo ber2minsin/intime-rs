@@ -5,6 +5,7 @@ pub mod embedding;
 pub mod event;
 pub mod models;
 pub mod pool;
+pub mod session;
 
 #[derive(Clone)]
 pub struct SqliteRepository {

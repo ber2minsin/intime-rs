@@ -45,28 +45,11 @@ fn embedding_of(seed: f32) -> Vec<f32> {
 
 async fn register_app(db: &TestDatabase, details: &AppDetails) -> i64 {
     let fp = details.fingerprint();
-    let company_id = if let Some(name) = details.company() {
-        match db.storage.app_repository.seen_company(&name).await {
-            Ok(id) => Some(id),
-            Err(_) => Some(
-                db.storage
-                    .app_repository
-                    .add_company(&name)
-                    .await
-                    .expect("add company"),
-            ),
-        }
-    } else {
-        None
-    };
-    if !db.storage.app_repository.seen_app(fp).await.unwrap() {
-        db.storage
-            .app_repository
-            .add_app(fp, details, company_id)
-            .await
-            .expect("add app");
-    }
-    db.storage.app_repository.get_app_id(fp).await.unwrap()
+    db.storage
+        .app_repository
+        .ensure_app(fp, details)
+        .await
+        .expect("ensure app")
 }
 
 #[tokio::test]
@@ -176,7 +159,7 @@ async fn persists_event_payload_and_screenshot_path() {
     let event_id = db
         .storage
         .event_repository
-        .add_event(&event, Some(app_id), &screenshot)
+        .add_event(&event, Some(app_id), &screenshot, None)
         .await
         .expect("add event");
 
@@ -210,7 +193,7 @@ async fn stores_and_searches_embeddings_with_sqlite_vec() {
     let event_id = db
         .storage
         .event_repository
-        .add_event(&event, Some(app_id), &None)
+        .add_event(&event, Some(app_id), &None, None)
         .await
         .unwrap();
 
@@ -234,7 +217,7 @@ async fn stores_and_searches_embeddings_with_sqlite_vec() {
     let event_id2 = db
         .storage
         .event_repository
-        .add_event(&event2, Some(app_id), &None)
+        .add_event(&event2, Some(app_id), &None, None)
         .await
         .unwrap();
     db.storage
@@ -271,7 +254,7 @@ async fn lists_events_in_insertion_order() {
         let event = focus_event(&details, handle);
         db.storage
             .event_repository
-            .add_event(&event, Some(app_id), &None)
+            .add_event(&event, Some(app_id), &None, None)
             .await
             .unwrap();
     }
@@ -308,6 +291,12 @@ async fn persists_every_event_variant_with_round_tripped_payload() {
             fingerprint: fp,
             window_handle: 3,
         },
+        EventData::UiAction {
+            kind: intime_core::models::UiActionKind::FormSubmit,
+            fingerprint: fp,
+            window_handle: 7,
+            label: Some("Submit".into()),
+        },
         EventData::IdleStart,
         EventData::IdleEnd,
         EventData::Gap,
@@ -334,18 +323,19 @@ async fn persists_every_event_variant_with_round_tripped_payload() {
                 focused_control_type: Some("Edit".into()),
                 automation_id: Some("main.edit".into()),
                 text_changed: name == "text_changed",
+                ..Default::default()
             },
         };
         let id = db
             .storage
             .event_repository
-            .add_event(&event, Some(app_id), &None)
+            .add_event(&event, Some(app_id), &None, None)
             .await
             .unwrap_or_else(|e| panic!("insert {name}: {e}"));
         ids.push((id, name));
     }
 
-    assert_eq!(ids.len(), 8);
+    assert_eq!(ids.len(), 9);
     for (id, expected_type) in ids {
         let stored = db.storage.event_repository.get_event(id).await.unwrap();
         assert_eq!(stored.event_type, expected_type);
@@ -368,7 +358,7 @@ async fn events_can_exist_without_app_or_screenshot() {
     let id = db
         .storage
         .event_repository
-        .add_event(&event, None, &None)
+        .add_event(&event, None, &None, None)
         .await
         .expect("orphan idle");
     let stored = db.storage.event_repository.get_event(id).await.unwrap();
@@ -403,6 +393,7 @@ async fn list_events_respects_limit() {
                 },
                 None,
                 &None,
+                None,
             )
             .await
             .unwrap();
@@ -412,31 +403,21 @@ async fn list_events_respects_limit() {
 }
 
 #[tokio::test]
-async fn duplicate_company_names_are_allowed_by_schema() {
-    // Current schema does not UNIQUE(company_name); seen_company returns the first row.
+async fn company_names_are_unique() {
     let db = TestDatabase::new().await.expect("test db");
     let name = "UniqueCo".to_string();
-    let first = db
-        .storage
+    db.storage
         .app_repository
         .add_company(&name)
         .await
         .expect("first");
-    let second = db
+    let err = db
         .storage
         .app_repository
         .add_company(&name)
         .await
-        .expect("second");
-    assert_ne!(first, second);
-    assert_eq!(
-        db.storage
-            .app_repository
-            .seen_company(&name)
-            .await
-            .unwrap(),
-        first
-    );
+        .expect_err("duplicate company");
+    assert!(format!("{err}").contains("UNIQUE") || format!("{err}").contains("unique") || format!("{err}").contains("Database"));
 }
 
 #[tokio::test]
@@ -488,7 +469,7 @@ async fn embedding_blob_helpers_match_stored_vector_length() {
     let event_id = db
         .storage
         .event_repository
-        .add_event(&focus_event(&details, 1), Some(app_id), &None)
+        .add_event(&focus_event(&details, 1), Some(app_id), &None, None)
         .await
         .unwrap();
 
@@ -537,12 +518,165 @@ async fn isolated_test_databases_do_not_share_state() {
             },
             None,
             &None,
+            None,
         )
         .await
         .unwrap();
 
     assert_eq!(a.storage.event_repository.list_events(10).await.unwrap().len(), 1);
     assert!(b.storage.event_repository.list_events(10).await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn ensure_app_normalizes_aumid_version_and_signature() {
+    let db = TestDatabase::new().await.expect("test db");
+    let details = AppDetails {
+        title: "Brave".into(),
+        file_path: "/opt/brave.com/brave/brave".into(),
+        aumid: Some("brave-browser".into()),
+        company_name: Some("Brave Software".into()),
+        product_name: Some("brave-browser".into()),
+        version_info: Some(VersionInfo {
+            file_version: Some("1.2.3".into()),
+            original_filename: Some("brave".into()),
+            ..Default::default()
+        }),
+        signature_info: Some(SignatureInfo {
+            publisher: Some("Brave Software, Inc.".into()),
+            ..Default::default()
+        }),
+    };
+    let app_id = db
+        .storage
+        .app_repository
+        .ensure_app(details.fingerprint(), &details)
+        .await
+        .unwrap();
+
+    let aumid_id: i64 = sqlx::query_scalar("SELECT aumid_id FROM app WHERE id = ?")
+        .bind(app_id)
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    let aumid = db.storage.app_repository.get_aumid(aumid_id).await.unwrap();
+    assert_eq!(aumid.aumid, "brave-browser");
+
+    let versions: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM app_version_info WHERE app_id = ?")
+            .bind(app_id)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!(versions, 1);
+
+    let signatures: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM app_signature WHERE app_id = ?")
+            .bind(app_id)
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!(signatures, 1);
+}
+
+#[tokio::test]
+async fn persists_queryable_event_context_columns() {
+    let db = TestDatabase::new().await.expect("test db");
+    let details = sample_details("code", Some("Acme"));
+    let app_id = register_app(&db, &details).await;
+    let event = Event {
+        timestamp: Timestamp::now(),
+        data: EventData::WindowFocus {
+            fingerprint: details.fingerprint(),
+            window_handle: 80,
+        },
+        metadata: EventMetadata {
+            window_title: Some("pipeline.rs — intime-rs — Cursor".into()),
+            process_id: Some(4242),
+            executable_path: Some(details.file_path.clone()),
+            focused_element: Some("Editor".into()),
+            document_name: Some("pipeline.rs".into()),
+            workspace_path: Some("intime-rs".into()),
+            ..Default::default()
+        },
+    };
+    let id = db
+        .storage
+        .event_repository
+        .add_event(&event, Some(app_id), &None, None)
+        .await
+        .unwrap();
+    let stored = db.storage.event_repository.get_event(id).await.unwrap();
+    assert_eq!(stored.window_handle, Some(80));
+    assert_eq!(stored.process_id, Some(4242));
+    assert_eq!(stored.focused_element.as_deref(), Some("Editor"));
+    assert_eq!(stored.document_name.as_deref(), Some("pipeline.rs"));
+    assert_eq!(stored.workspace_path.as_deref(), Some("intime-rs"));
+    assert_eq!(stored.app_id, Some(app_id));
+}
+
+#[tokio::test]
+async fn session_and_rules_round_trip() {
+    let db = TestDatabase::new().await.expect("test db");
+    let cats = db
+        .storage
+        .session_repository
+        .list_categories()
+        .await
+        .unwrap();
+    assert!(cats.iter().any(|c| c.slug == "code_editing"));
+    let coding_id = cats.iter().find(|c| c.slug == "code_editing").unwrap().id;
+    let rules = db
+        .storage
+        .session_repository
+        .list_activity_rules()
+        .await
+        .unwrap();
+    assert!(!rules.is_empty());
+
+    let started = Timestamp::now().as_datetime();
+    let details = sample_details("code", None);
+    let app_id = register_app(&db, &details).await;
+    let session_id = db
+        .storage
+        .session_repository
+        .open_session(
+            started,
+            Some("code_editing"),
+            Some("Editing pipeline"),
+            "heuristic",
+            Some(coding_id),
+            Some("app:code|doc:pipeline.rs"),
+            Some(app_id),
+        )
+        .await
+        .unwrap();
+
+    let event_id = db
+        .storage
+        .event_repository
+        .add_event(
+            &focus_event(&details, 9),
+            Some(app_id),
+            &None,
+            Some(session_id),
+        )
+        .await
+        .unwrap();
+    let stored = db.storage.event_repository.get_event(event_id).await.unwrap();
+    assert_eq!(stored.session_id, Some(session_id));
+    assert_eq!(stored.window_handle, Some(9));
+    assert!(stored.window_title.is_some());
+
+    let session = db
+        .storage
+        .session_repository
+        .get_session(session_id)
+        .await
+        .unwrap();
+    assert_eq!(session.category_id, Some(coding_id));
+    assert_eq!(session.intent.as_deref(), Some("code_editing"));
+    assert_eq!(session.context_key.as_deref(), Some("app:code|doc:pipeline.rs"));
+    assert_eq!(session.app_id, Some(app_id));
 }
 
 #[tokio::test]

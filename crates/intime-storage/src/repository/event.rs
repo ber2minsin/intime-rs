@@ -10,6 +10,7 @@ pub trait EventRepository: Send + Sync {
         event: &Event,
         app_id: Option<i64>,
         screenshot_path: &Option<String>,
+        session_id: Option<i64>,
     ) -> Result<i64, StorageError>;
 
     async fn get_event(&self, id: i64) -> Result<EventRecord, StorageError>;

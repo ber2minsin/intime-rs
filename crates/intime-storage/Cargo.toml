@@ -23,3 +23,4 @@ tempfile = "3.23.0"
 
 tokio = { version = "1.52.1", features = ["full"] }
 anyhow = "1.0.102"
+chrono = { version = "0.4.44", features = ["serde"] }
