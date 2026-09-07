@@ -43,3 +43,9 @@ pub fn create_capture_engine() -> Result<Box<dyn ScreenshotSource>, PlatformErro
     use linux::screenshot::LinuxCapture;
     Ok(Box::new(LinuxCapture::new()?))
 }
+
+/// Fill `url` / focused UI fields from AT-SPI for a process (Sway event enrichment).
+#[cfg(target_os = "linux")]
+pub fn enrich_metadata_from_atspi(pid: u32, meta: &mut intime_core::models::EventMetadata) {
+    linux::atspi_hooks::enrich_metadata_from_atspi(pid, meta);
+}

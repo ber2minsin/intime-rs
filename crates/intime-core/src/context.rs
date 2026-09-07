@@ -1,10 +1,15 @@
-//! Heuristics that turn window titles / product hints into document or URL context.
+//! Heuristics that turn window titles / product hints into document context.
+//!
+//! Browser URLs are **not** invented from titles — they come from the a11y
+//! Document interface (AT-SPI / UI Automation). This module only copies a URL
+//! when it is literally present in the title string, and parses editor paths.
 
 use crate::models::EventMetadata;
 
-/// Best-effort enrichment of document/url fields from a window title.
+/// Best-effort enrichment of document fields from a window title.
 ///
-/// Does not invent content; only parses common editor/browser title patterns.
+/// Does not invent site URLs from page names (e.g. "Home / X"). Only accepts a
+/// URL that already appears as `http(s)://…` in the title.
 pub fn enrich_from_window_title(meta: &mut EventMetadata, product_hint: Option<&str>) {
     let Some(title) = meta.window_title.clone() else {
         return;
@@ -167,10 +172,16 @@ fn looks_like_meeting(hint: &str, title: &str) -> bool {
 }
 
 fn extract_browser_url(title: &str) -> Option<String> {
-    // Patterns like "Page - https://example.com - Brave"
+    // Only when the address is literally in the title, e.g. "Page - https://example.com - Brave"
     for part in title.split(" - ").map(str::trim) {
         if part.starts_with("http://") || part.starts_with("https://") {
             return Some(part.to_string());
+        }
+    }
+    for token in title.split_whitespace() {
+        let t = token.trim_matches(|c: char| matches!(c, '"' | '\'' | ',' | '.' | ')' | '('));
+        if t.starts_with("https://") || t.starts_with("http://") {
+            return Some(t.to_string());
         }
     }
     None
@@ -345,6 +356,34 @@ mod tests {
         assert_eq!(meta.document_name.as_deref(), Some("pipeline.rs"));
         assert_eq!(meta.workspace_path.as_deref(), Some("intime-rs"));
         assert_eq!(guess_intent(&meta, Some("cursor")), "coding");
+    }
+
+    #[test]
+    fn does_not_invent_urls_from_site_titles() {
+        let mut home = EventMetadata {
+            window_title: Some("Home / X - Brave".into()),
+            ..Default::default()
+        };
+        enrich_from_window_title(&mut home, Some("brave-browser"));
+        assert!(home.url.is_none());
+        assert_eq!(home.document_name.as_deref(), Some("Home / X"));
+
+        let mut ig = EventMetadata {
+            window_title: Some("Instagram - Brave".into()),
+            ..Default::default()
+        };
+        enrich_from_window_title(&mut ig, Some("brave-browser"));
+        assert!(ig.url.is_none());
+    }
+
+    #[test]
+    fn copies_literal_url_from_browser_title() {
+        let mut meta = EventMetadata {
+            window_title: Some("Docs - https://example.com/path - Brave".into()),
+            ..Default::default()
+        };
+        enrich_from_window_title(&mut meta, Some("brave-browser"));
+        assert_eq!(meta.url.as_deref(), Some("https://example.com/path"));
     }
 
     #[test]

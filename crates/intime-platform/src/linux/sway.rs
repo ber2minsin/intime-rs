@@ -8,7 +8,7 @@ use swayipc::{Connection, Event as SwayEvent, EventType, Node, WindowChange};
 
 use crate::{
     error::PlatformError,
-    linux::identity::enrich_app_details,
+    linux::{atspi_hooks::enrich_metadata_from_atspi, identity::enrich_app_details},
     shared::push_event,
 };
 
@@ -50,12 +50,15 @@ fn handle_window_event(change: WindowChange, node: &Node) {
     let fingerprint = details.fingerprint();
     let window_handle = node.id as u64;
     let timestamp = Timestamp::now();
-    let metadata = EventMetadata {
+    let mut metadata = EventMetadata {
         window_title: Some(details.title.clone()),
         process_id: node.pid.map(|pid| pid as u32),
         executable_path: (!details.file_path.is_empty()).then(|| details.file_path.clone()),
         ..Default::default()
     };
+    if let Some(pid) = node.pid {
+        enrich_metadata_from_atspi(pid as u32, &mut metadata);
+    }
 
     match change {
         WindowChange::Focus => {

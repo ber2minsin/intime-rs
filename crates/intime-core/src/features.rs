@@ -14,7 +14,7 @@ pub struct FeatureFlags {
     pub embeddings_enabled: bool,
     /// Persist focused UI element / automation metadata (more intrusive).
     pub rich_ui_metadata: bool,
-    /// Infer document paths / URLs from window titles and UI hints.
+    /// Persist document paths / names / URLs (from a11y or literal title parse).
     pub document_context: bool,
     /// Group events into heuristic category sessions (not every flicker).
     pub session_grouping: bool,
