@@ -1,0 +1,44 @@
+{
+  "name": "github_repo_work",
+  "description": "Browsing multiple paths in one GitHub repo should merge to repo: context.",
+  "steps": [
+    {
+      "type": "app_seen",
+      "handle": 80,
+      "title": "ber2minsin/intime-rs · GitHub - Brave",
+      "file_path": "/opt/brave.com/brave/brave",
+      "company": "Brave Software",
+      "product": "brave-browser",
+      "url": "https://github.com/ber2minsin/intime-rs",
+      "fixture": "compose.png"
+    },
+    {
+      "type": "window_focus",
+      "handle": 80,
+      "title": "ber2minsin/intime-rs · GitHub - Brave",
+      "url": "https://github.com/ber2minsin/intime-rs"
+    },
+    {
+      "type": "title_change",
+      "handle": 80,
+      "new_title": "Pull Request · ber2minsin/intime-rs · GitHub - Brave",
+      "url": "https://github.com/ber2minsin/intime-rs/pull/1"
+    },
+    {
+      "type": "window_focus",
+      "handle": 80,
+      "title": "Pull Request · ber2minsin/intime-rs · GitHub - Brave",
+      "url": "https://github.com/ber2minsin/intime-rs/pull/1"
+    },
+    { "type": "idle_start" }
+  ],
+  "expect": {
+    "min_events": 5,
+    "event_types": ["app_seen", "window_focus", "title_change", "idle_start"],
+    "min_screenshots": 1,
+    "min_embeddings": 0,
+    "min_sessions": 1,
+    "intents": ["code_collaboration"],
+    "context_key_prefixes": ["repo:github.com:ber2minsin/intime-rs"]
+  }
+}

@@ -49,7 +49,6 @@ pub async fn replay_scenario(
     let capture = FixtureCapture::new(scenario_dir.to_path_buf(), fixture_queues);
     let capture_log = Arc::new(Mutex::new(Vec::new()));
 
-    // Wrap to record captures while still loading fixtures.
     let mut orchestrator = ScreenshotOrchestrator::with_minimum_interval(
         Box::new(LoggingCapture {
             inner: capture,
@@ -84,7 +83,6 @@ pub async fn replay_scenario(
 
     let mut service =
         EmbeddingService::new(embedding_server_url).context("embedding server URL")?;
-    // Fail fast if the staged server is down (`/` on stub and CLIP).
     reqwest::get(format!(
         "{}/",
         embedding_server_url.trim_end_matches('/')
@@ -115,7 +113,6 @@ pub async fn replay_scenario(
     };
 
     std::env::set_current_dir(old_cwd)?;
-    // Keep temp dirs alive until end of function via drops after report built.
     drop(db);
     drop(work);
     Ok(report)
@@ -145,6 +142,8 @@ fn step_to_event(step: &ScenarioStep, fingerprint: &mut Option<blake3::Hash>) ->
             file_path,
             company,
             product,
+            url,
+            workspace,
             ..
         } => {
             let details = AppDetails {
@@ -168,6 +167,8 @@ fn step_to_event(step: &ScenarioStep, fingerprint: &mut Option<blake3::Hash>) ->
                 metadata: EventMetadata {
                     window_title: Some(title.clone()),
                     executable_path: Some(file_path.clone()),
+                    url: url.clone(),
+                    workspace_path: workspace.clone(),
                     ..Default::default()
                 },
             })
@@ -176,6 +177,9 @@ fn step_to_event(step: &ScenarioStep, fingerprint: &mut Option<blake3::Hash>) ->
             handle,
             title,
             focused_element,
+            url,
+            workspace,
+            document_name,
             ..
         } => {
             let fp = fingerprint.context("WindowFocus before AppSeen")?;
@@ -188,12 +192,19 @@ fn step_to_event(step: &ScenarioStep, fingerprint: &mut Option<blake3::Hash>) ->
                 metadata: EventMetadata {
                     window_title: Some(title.clone()),
                     focused_element: focused_element.clone(),
+                    url: url.clone(),
+                    workspace_path: workspace.clone(),
+                    document_name: document_name.clone(),
                     ..Default::default()
                 },
             })
         }
         ScenarioStep::TitleChange {
-            handle, new_title, ..
+            handle,
+            new_title,
+            url,
+            workspace,
+            ..
         } => {
             let fp = fingerprint.context("TitleChange before AppSeen")?;
             Ok(Event {
@@ -205,6 +216,8 @@ fn step_to_event(step: &ScenarioStep, fingerprint: &mut Option<blake3::Hash>) ->
                 },
                 metadata: EventMetadata {
                     window_title: Some(new_title.clone()),
+                    url: url.clone(),
+                    workspace_path: workspace.clone(),
                     ..Default::default()
                 },
             })
@@ -263,6 +276,34 @@ async fn assert_expectations(
         .await?;
         if found.as_deref() != Some(company.as_str()) {
             bail!("expected company {company} to be registered");
+        }
+    }
+
+    let sessions: Vec<(Option<String>, Option<String>)> =
+        sqlx::query_as("SELECT intent, context_key FROM session ORDER BY id")
+            .fetch_all(&db.pool)
+            .await?;
+
+    if let Some(min_sessions) = expect.min_sessions {
+        if sessions.len() < min_sessions {
+            bail!(
+                "expected at least {min_sessions} sessions, got {} ({sessions:?})",
+                sessions.len()
+            );
+        }
+    }
+    for intent in &expect.intents {
+        if !sessions.iter().any(|(i, _)| i.as_deref() == Some(intent.as_str())) {
+            bail!("missing session intent {intent}; sessions={sessions:?}");
+        }
+    }
+    for prefix in &expect.context_key_prefixes {
+        if !sessions
+            .iter()
+            .filter_map(|(_, k)| k.as_deref())
+            .any(|k| k.starts_with(prefix.as_str()))
+        {
+            bail!("missing context_key prefix {prefix}; sessions={sessions:?}");
         }
     }
     Ok(())

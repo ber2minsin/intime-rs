@@ -1,0 +1,45 @@
+{
+  "name": "coding_workspace",
+  "description": "Engineer edits multiple files in one Cursor workspace — should be one ws: session.",
+  "steps": [
+    {
+      "type": "app_seen",
+      "handle": 10,
+      "title": "pipeline.rs — intime-rs — Cursor",
+      "file_path": "/opt/Cursor/cursor",
+      "company": "Anysphere",
+      "product": "Cursor",
+      "workspace": "intime-rs",
+      "fixture": "compose.png"
+    },
+    {
+      "type": "window_focus",
+      "handle": 10,
+      "title": "pipeline.rs — intime-rs — Cursor",
+      "workspace": "intime-rs",
+      "document_name": "pipeline.rs"
+    },
+    {
+      "type": "title_change",
+      "handle": 10,
+      "new_title": "session_tracker.rs — intime-rs — Cursor",
+      "workspace": "intime-rs"
+    },
+    {
+      "type": "window_focus",
+      "handle": 10,
+      "title": "session_tracker.rs — intime-rs — Cursor",
+      "workspace": "intime-rs",
+      "document_name": "session_tracker.rs"
+    },
+    { "type": "idle_start" }
+  ],
+  "expect": {
+    "min_events": 5,
+    "event_types": ["app_seen", "window_focus", "title_change", "idle_start"],
+    "min_screenshots": 1,
+    "min_embeddings": 0,
+    "min_sessions": 1,
+    "context_key_prefixes": ["ws:intime-rs"]
+  }
+}

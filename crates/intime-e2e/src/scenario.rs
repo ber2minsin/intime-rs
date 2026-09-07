@@ -27,6 +27,10 @@ pub enum ScenarioStep {
         product: Option<String>,
         #[serde(default)]
         fixture: Option<String>,
+        #[serde(default)]
+        url: Option<String>,
+        #[serde(default)]
+        workspace: Option<String>,
     },
     WindowFocus {
         handle: u64,
@@ -35,12 +39,22 @@ pub enum ScenarioStep {
         focused_element: Option<String>,
         #[serde(default)]
         fixture: Option<String>,
+        #[serde(default)]
+        url: Option<String>,
+        #[serde(default)]
+        workspace: Option<String>,
+        #[serde(default)]
+        document_name: Option<String>,
     },
     TitleChange {
         handle: u64,
         new_title: String,
         #[serde(default)]
         fixture: Option<String>,
+        #[serde(default)]
+        url: Option<String>,
+        #[serde(default)]
+        workspace: Option<String>,
     },
     IdleStart,
     IdleEnd,
@@ -57,6 +71,15 @@ pub struct ScenarioExpect {
     pub min_embeddings: usize,
     #[serde(default)]
     pub company: Option<String>,
+    /// Minimum number of session rows created during the scenario.
+    #[serde(default)]
+    pub min_sessions: Option<usize>,
+    /// Each listed intent (category slug) must appear on at least one session.
+    #[serde(default)]
+    pub intents: Vec<String>,
+    /// Each prefix must match at least one session `context_key`.
+    #[serde(default)]
+    pub context_key_prefixes: Vec<String>,
 }
 
 impl Scenario {

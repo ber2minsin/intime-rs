@@ -722,7 +722,8 @@ async fn mpris_play_attaches_browser_app_and_merges_youtube_session() {
     assert_eq!(intent.as_deref(), Some("media_streaming_official"));
     assert_eq!(
         context_key.as_deref(),
-        Some("media:stop playing kayle reroll, play this instead")
+        Some("media:yt:abc123"),
+        "watch URL id must define the session key, got {context_key:?}"
     );
 
     let play_event = h
@@ -825,4 +826,505 @@ async fn idle_start_closes_session_with_ended_reason() {
         .filter(|e| e.event_type == "idle_start")
         .count();
     assert_eq!(idle_events, 1);
+}
+
+#[tokio::test]
+async fn distinct_videos_netflix_and_search_open_separate_sessions() {
+    let mut h = PipelineHarness::new(Duration::from_secs(60)).await;
+    h.flags.screenshots_enabled = false;
+    h.flags.embeddings_enabled = false;
+
+    let brave = AppDetails {
+        title: "Brave".into(),
+        file_path: "/opt/brave.com/brave/brave".into(),
+        aumid: Some("brave-browser".into()),
+        company_name: Some("Brave Software".into()),
+        product_name: Some("brave-browser".into()),
+        version_info: None,
+        signature_info: None,
+    };
+    let fp = brave.fingerprint();
+
+    h.handle(Event {
+        timestamp: Timestamp::now(),
+        data: EventData::AppSeen {
+            fingerprint: fp,
+            details: brave.clone(),
+            window_handle: 80,
+        },
+        metadata: EventMetadata {
+            window_title: Some(brave.title.clone()),
+            executable_path: Some(brave.file_path.clone()),
+            ..Default::default()
+        },
+    })
+    .await;
+
+    // Video A
+    h.handle(Event {
+        timestamp: Timestamp::now(),
+        data: EventData::UiAction {
+            kind: intime_core::models::UiActionKind::PlayMedia,
+            fingerprint: blake3::hash(b"mpris\x1fbrave"),
+            window_handle: 999,
+            label: Some("Video Alpha".into()),
+        },
+        metadata: EventMetadata {
+            window_title: Some("Video Alpha - YouTube - Brave".into()),
+            url: Some("https://www.youtube.com/watch?v=videoAAAA".into()),
+            focused_control_type: Some("mpris".into()),
+            automation_id: Some("brave".into()),
+            ..Default::default()
+        },
+    })
+    .await;
+
+    // Video B (different id → new session)
+    h.handle(Event {
+        timestamp: Timestamp::now(),
+        data: EventData::UiAction {
+            kind: intime_core::models::UiActionKind::PlayMedia,
+            fingerprint: blake3::hash(b"mpris\x1fbrave"),
+            window_handle: 999,
+            label: Some("Video Beta".into()),
+        },
+        metadata: EventMetadata {
+            window_title: Some("Video Beta - YouTube - Brave".into()),
+            url: Some("https://www.youtube.com/watch?v=videoBBBB".into()),
+            focused_control_type: Some("mpris".into()),
+            automation_id: Some("brave".into()),
+            ..Default::default()
+        },
+    })
+    .await;
+
+    // Netflix show
+    h.handle(Event {
+        timestamp: Timestamp::now(),
+        data: EventData::UiAction {
+            kind: intime_core::models::UiActionKind::PlayMedia,
+            fingerprint: blake3::hash(b"mpris\x1fbrave"),
+            window_handle: 999,
+            label: Some("Community".into()),
+        },
+        metadata: EventMetadata {
+            window_title: Some("Community - Netflix - Brave".into()),
+            url: Some("https://www.netflix.com/title/70136141".into()),
+            focused_control_type: Some("mpris".into()),
+            automation_id: Some("brave".into()),
+            ..Default::default()
+        },
+    })
+    .await;
+
+    // Google search — need a few meaningful events to promote
+    for i in 0..3 {
+        h.handle(Event {
+            timestamp: Timestamp::now(),
+            data: EventData::WindowFocus {
+                fingerprint: fp,
+                window_handle: 80 + i,
+            },
+            metadata: EventMetadata {
+                window_title: Some("good ai UI designers - Google Search - Brave".into()),
+                url: Some("https://www.google.com/search?q=good+ai+UI+designers".into()),
+                executable_path: Some(brave.file_path.clone()),
+                ..Default::default()
+            },
+        })
+        .await;
+    }
+
+    let sessions: Vec<(Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT intent, context_key FROM session ORDER BY id",
+    )
+    .fetch_all(&h.db.pool)
+    .await
+    .unwrap();
+
+    assert!(
+        sessions.len() >= 4,
+        "expected ≥4 sessions (2 yt + netflix + search), got {sessions:?}"
+    );
+    let intents: Vec<&str> = sessions
+        .iter()
+        .filter_map(|(i, _)| i.as_deref())
+        .collect();
+    assert!(
+        intents.iter().any(|i| *i == "media_streaming_official"),
+        "missing streaming session: {sessions:?}"
+    );
+    assert!(
+        intents.iter().any(|i| *i == "web_search"),
+        "missing web_search session: {sessions:?}"
+    );
+    let keys: Vec<&str> = sessions
+        .iter()
+        .filter_map(|(_, k)| k.as_deref())
+        .collect();
+    assert!(
+        keys.iter().any(|k| k.contains("videoAAAA") || *k == "media:yt:videoAAAA"),
+        "missing video A key: {sessions:?}"
+    );
+    assert!(
+        keys.iter().any(|k| k.contains("videoBBBB") || *k == "media:yt:videoBBBB"),
+        "missing video B key: {sessions:?}"
+    );
+    assert!(
+        keys.iter().any(|k| *k == "media:nf:70136141"),
+        "missing netflix key: {sessions:?}"
+    );
+}
+
+#[tokio::test]
+async fn finish_from_other_app_does_not_clear_media_session() {
+    let mut h = PipelineHarness::new(Duration::from_secs(60)).await;
+    h.flags.screenshots_enabled = false;
+    h.flags.embeddings_enabled = false;
+
+    let brave = AppDetails {
+        title: "Show - Netflix - Brave".into(),
+        file_path: "/opt/brave.com/brave/brave".into(),
+        aumid: Some("brave-browser".into()),
+        company_name: Some("Brave Software".into()),
+        product_name: Some("brave-browser".into()),
+        version_info: None,
+        signature_info: None,
+    };
+    let brave_fp = brave.fingerprint();
+    let bt_fp = blake3::hash(b"bluetooth-devices");
+
+    h.handle(Event {
+        timestamp: Timestamp::now(),
+        data: EventData::AppSeen {
+            fingerprint: brave_fp,
+            details: brave.clone(),
+            window_handle: 80,
+        },
+        metadata: EventMetadata {
+            window_title: Some(brave.title.clone()),
+            executable_path: Some(brave.file_path.clone()),
+            ..Default::default()
+        },
+    })
+    .await;
+
+    h.handle(Event {
+        timestamp: Timestamp::now(),
+        data: EventData::UiAction {
+            kind: intime_core::models::UiActionKind::PlayMedia,
+            fingerprint: blake3::hash(b"mpris\x1fbrave"),
+            window_handle: 999,
+            label: Some("Community".into()),
+        },
+        metadata: EventMetadata {
+            window_title: Some("Community - Netflix - Brave".into()),
+            url: Some("https://www.netflix.com/title/70136141".into()),
+            focused_control_type: Some("mpris".into()),
+            automation_id: Some("brave".into()),
+            ..Default::default()
+        },
+    })
+    .await;
+
+    let open_before: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM session WHERE ended_at IS NULL")
+            .fetch_one(&h.db.pool)
+            .await
+            .unwrap();
+    assert_eq!(open_before, 1);
+
+    // Bluetooth dialog closes — must not end the Netflix session.
+    h.handle(Event {
+        timestamp: Timestamp::now(),
+        data: EventData::UiAction {
+            kind: intime_core::models::UiActionKind::Finish,
+            fingerprint: bt_fp,
+            window_handle: 12,
+            label: Some("Bluetooth Devices".into()),
+        },
+        metadata: EventMetadata {
+            window_title: Some("Bluetooth Devices".into()),
+            ..Default::default()
+        },
+    })
+    .await;
+
+    let open_after: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM session WHERE ended_at IS NULL")
+            .fetch_one(&h.db.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        open_after, 1,
+        "Finish from another app must not close the media session"
+    );
+}
+
+#[tokio::test]
+async fn coding_workspace_merges_files_into_one_session() {
+    let mut h = PipelineHarness::new(Duration::from_secs(60)).await;
+    h.flags.screenshots_enabled = false;
+    h.flags.embeddings_enabled = false;
+
+    let cursor = AppDetails {
+        title: "pipeline.rs — intime-rs — Cursor".into(),
+        file_path: "/opt/Cursor/cursor".into(),
+        aumid: Some("cursor".into()),
+        company_name: Some("Anysphere".into()),
+        product_name: Some("Cursor".into()),
+        version_info: None,
+        signature_info: None,
+    };
+    let fp = cursor.fingerprint();
+
+    h.handle(Event {
+        timestamp: Timestamp::now(),
+        data: EventData::AppSeen {
+            fingerprint: fp,
+            details: cursor.clone(),
+            window_handle: 10,
+        },
+        metadata: EventMetadata {
+            window_title: Some(cursor.title.clone()),
+            executable_path: Some(cursor.file_path.clone()),
+            document_name: Some("pipeline.rs".into()),
+            workspace_path: Some("intime-rs".into()),
+            ..Default::default()
+        },
+    })
+    .await;
+
+    for (i, file) in ["pipeline.rs", "session_tracker.rs", "category.rs"]
+        .iter()
+        .enumerate()
+    {
+        h.handle(Event {
+            timestamp: Timestamp::now(),
+            data: EventData::WindowFocus {
+                fingerprint: fp,
+                window_handle: 10 + i as u64,
+            },
+            metadata: EventMetadata {
+                window_title: Some(format!("{file} — intime-rs — Cursor")),
+                executable_path: Some(cursor.file_path.clone()),
+                document_name: Some((*file).into()),
+                workspace_path: Some("intime-rs".into()),
+                ..Default::default()
+            },
+        })
+        .await;
+        h.handle(Event {
+            timestamp: Timestamp::now(),
+            data: EventData::TitleChange {
+                fingerprint: fp,
+                new_title: format!("{file} — intime-rs — Cursor"),
+                window_handle: 10,
+            },
+            metadata: EventMetadata {
+                window_title: Some(format!("{file} — intime-rs — Cursor")),
+                document_name: Some((*file).into()),
+                workspace_path: Some("intime-rs".into()),
+                ..Default::default()
+            },
+        })
+        .await;
+    }
+
+    let sessions: Vec<(Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT intent, context_key, summary FROM session ORDER BY id",
+    )
+    .fetch_all(&h.db.pool)
+    .await
+    .unwrap();
+    assert_eq!(sessions.len(), 1, "expected one workspace session: {sessions:?}");
+    let (intent, key, _) = &sessions[0];
+    assert!(
+        intent.as_deref() == Some("ai_coding") || intent.as_deref() == Some("code_editing"),
+        "unexpected coding intent: {sessions:?}"
+    );
+    assert_eq!(key.as_deref(), Some("ws:intime-rs"));
+}
+
+#[tokio::test]
+async fn github_repo_pages_share_repo_context_and_code_category() {
+    let mut h = PipelineHarness::new(Duration::from_secs(60)).await;
+    h.flags.screenshots_enabled = false;
+    h.flags.embeddings_enabled = false;
+
+    let brave = AppDetails {
+        title: "brave".into(),
+        file_path: "/opt/brave.com/brave/brave".into(),
+        aumid: Some("brave-browser".into()),
+        company_name: Some("Brave Software".into()),
+        product_name: Some("brave-browser".into()),
+        version_info: None,
+        signature_info: None,
+    };
+    let fp = brave.fingerprint();
+
+    h.handle(Event {
+        timestamp: Timestamp::now(),
+        data: EventData::AppSeen {
+            fingerprint: fp,
+            details: brave.clone(),
+            window_handle: 80,
+        },
+        metadata: EventMetadata {
+            window_title: Some("ber2minsin/intime-rs".into()),
+            executable_path: Some(brave.file_path.clone()),
+            ..Default::default()
+        },
+    })
+    .await;
+
+    for (path, title) in [
+        (
+            "https://github.com/ber2minsin/intime-rs",
+            "ber2minsin/intime-rs · GitHub - Brave",
+        ),
+        (
+            "https://github.com/ber2minsin/intime-rs/pull/3",
+            "Fix sessions by ber2minsin · Pull Request #3 · ber2minsin/intime-rs · GitHub - Brave",
+        ),
+        (
+            "https://github.com/ber2minsin/intime-rs/blob/main/README.md",
+            "intime-rs/README.md at main · ber2minsin/intime-rs · GitHub - Brave",
+        ),
+    ] {
+        h.handle(Event {
+            timestamp: Timestamp::now(),
+            data: EventData::WindowFocus {
+                fingerprint: fp,
+                window_handle: 80,
+            },
+            metadata: EventMetadata {
+                window_title: Some(title.into()),
+                url: Some(path.into()),
+                executable_path: Some(brave.file_path.clone()),
+                ..Default::default()
+            },
+        })
+        .await;
+        h.handle(Event {
+            timestamp: Timestamp::now(),
+            data: EventData::TitleChange {
+                fingerprint: fp,
+                new_title: title.into(),
+                window_handle: 80,
+            },
+            metadata: EventMetadata {
+                window_title: Some(title.into()),
+                url: Some(path.into()),
+                executable_path: Some(brave.file_path.clone()),
+                ..Default::default()
+            },
+        })
+        .await;
+    }
+
+    let sessions: Vec<(Option<String>, Option<String>)> =
+        sqlx::query_as("SELECT intent, context_key FROM session ORDER BY id")
+            .fetch_all(&h.db.pool)
+            .await
+            .unwrap();
+    assert_eq!(sessions.len(), 1, "repo pages should merge: {sessions:?}");
+    assert_eq!(
+        sessions[0].0.as_deref(),
+        Some("code_collaboration"),
+        "{sessions:?}"
+    );
+    assert_eq!(
+        sessions[0].1.as_deref(),
+        Some("repo:github.com:ber2minsin/intime-rs")
+    );
+}
+
+#[tokio::test]
+async fn steam_game_session_and_list_sessions_query() {
+    let mut h = PipelineHarness::new(Duration::from_secs(60)).await;
+    h.flags.screenshots_enabled = false;
+    h.flags.embeddings_enabled = false;
+
+    let steam = AppDetails {
+        title: "Counter-Strike 2".into(),
+        file_path: "/home/user/.local/share/Steam/steamapps/common/Counter-Strike Global Offensive/game/bin/linuxsteamrt64/cs2"
+            .into(),
+        aumid: Some("steam".into()),
+        company_name: Some("Valve".into()),
+        product_name: Some("steam".into()),
+        version_info: None,
+        signature_info: None,
+    };
+    let fp = steam.fingerprint();
+
+    h.handle(Event {
+        timestamp: Timestamp::now(),
+        data: EventData::AppSeen {
+            fingerprint: fp,
+            details: steam.clone(),
+            window_handle: 42,
+        },
+        metadata: EventMetadata {
+            window_title: Some(steam.title.clone()),
+            executable_path: Some(steam.file_path.clone()),
+            ..Default::default()
+        },
+    })
+    .await;
+
+    for _ in 0..3 {
+        h.handle(Event {
+            timestamp: Timestamp::now(),
+            data: EventData::WindowFocus {
+                fingerprint: fp,
+                window_handle: 42,
+            },
+            metadata: EventMetadata {
+                window_title: Some("Counter-Strike 2".into()),
+                executable_path: Some(steam.file_path.clone()),
+                ..Default::default()
+            },
+        })
+        .await;
+    }
+
+    h.handle(Event {
+        timestamp: Timestamp::now(),
+        data: EventData::IdleStart,
+        metadata: Default::default(),
+    })
+    .await;
+
+    let sessions: Vec<(Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT intent, context_key, summary FROM session ORDER BY id",
+    )
+    .fetch_all(&h.db.pool)
+    .await
+    .unwrap();
+    assert_eq!(sessions.len(), 1, "{sessions:?}");
+    assert_eq!(sessions[0].0.as_deref(), Some("gaming"));
+    assert_eq!(sessions[0].1.as_deref(), Some("game:counter-strike 2"));
+    assert!(
+        sessions[0]
+            .2
+            .as_deref()
+            .is_some_and(|s| s.contains("gaming") && s.contains("game:counter-strike 2")),
+        "summary missing: {sessions:?}"
+    );
+
+    use intime_storage::SessionListFilter;
+    let listed = h
+        .db
+        .storage
+        .session_repository
+        .list_sessions(SessionListFilter {
+            intent: Some("gaming".into()),
+            context_key_prefix: Some("game:".into()),
+            limit: 10,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(listed.len(), 1);
 }
