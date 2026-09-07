@@ -64,7 +64,7 @@ and document columns; focused UI is available via payload when present.
 
 | Table | Role |
 | --- | --- |
-| `category` | Flat taxonomy (~48 seeds: coding, BI, HR, social short/long, official/unofficial streaming, …) |
+| `category` | Flat taxonomy (~49 seeds: coding, BI, HR, social media, short-form video, watching series/streaming, web search, other web browsing, …) |
 | `activity_rule` | 1000+ matchers on app / title / url / path / company (`source`: seed, user, llm); regenerate via `scripts/generate_activity_seed.py` |
 | `session` | Merge of same `category_id` + `context_key` (+ `app_id`) after promotion; `important=1` pins screenshots; `ended_reason` records why it closed (`idle`, `gap`, `context_change`, `finish`, `close`) |
 
@@ -97,8 +97,22 @@ Mark a session important via storage: `session_repository.set_session_important(
 (UI wiring later).
 
 Media contexts (`media_streaming_*`, `media_local`, `music_listening`, …) merge on
-normalized media title. Browser MPRIS players match via `automation_id` (e.g. brave)
-plus title/URL — not bare `focused_control_type=mpris` (that is only a low-priority fallback).
+a **content id** when the URL has one (`media:yt:{id}`, `media:nf:{id}`), otherwise
+on a normalized media title. Chrome-only titles (`Netflix`, `YouTube`) are weak keys
+and do not collapse every show/video into one session.
+
+Coding / design / VCS sessions prefer **project identity**:
+- IDE workspace → `ws:{name}` (from `workspace_path` or editor title)
+- GitHub/GitLab/Bitbucket → `repo:{host}:{owner}/{repo}`
+- Figma → `figma:{file_key}`
+- Games → `game:{title}` (launcher chrome is weak)
+
+Query helpers for AI/UI: `session_repository.list_sessions(SessionListFilter)` and
+`event_repository.list_events_filtered(EventListFilter)` (time, intent, context
+prefix, workspace, session id). Closed sessions get a one-line `summary`.
+
+Browser MPRIS players match via title/URL — not bare `focused_control_type=mpris`
+(that is only a low-priority fallback).
 
 `UiAction` events never become session children of their own — they attach to the
 open session when one exists, and `play_media` can promote pending activity early.

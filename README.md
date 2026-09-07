@@ -31,13 +31,18 @@ The daemon captures window activity, optional screenshots, and embeddings so pas
 ## Quick start (backend)
 
 ```bash
-# system deps (Fedora example)
-sudo dnf install dbus-devel grim at-spi2-core xdg-desktop-portal-wlr
+# system deps (Fedora — pick portal for your desktop)
+sudo dnf install dbus-devel at-spi2-core
+# Sway: grim xdg-desktop-portal-wlr
+# GNOME: xdg-desktop-portal-gnome
+# KDE:   xdg-desktop-portal-kde
 
 cp .env.example .env   # set DATABASE_URL
 cargo run -p intime-migrate
 cargo run -p intime-daemon
 ```
+
+Linux capture prefers **Sway IPC** when available, otherwise **AT-SPI** (GNOME, KDE, Hyprland, generic Wayland). Screenshots use `grim` on Sway and the XDG portal elsewhere.
 
 Embedding service (optional, for image/text vectors): see `crates/intime-ai/python`.
 
