@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::time::Timestamp;
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Event {
     pub timestamp: Timestamp,
     pub data: EventData,
@@ -24,9 +24,17 @@ pub struct EventMetadata {
     pub automation_id: Option<String>,
     /// Indicates that the UI reported text activity without storing typed text.
     pub text_changed: bool,
+    /// Absolute or project-relative path of the file being edited, when known.
+    pub document_path: Option<String>,
+    /// Basename or tab label for the active document / page.
+    pub document_name: Option<String>,
+    /// Browser URL when extractable from the title or accessibility tree.
+    pub url: Option<String>,
+    /// Editor workspace / project folder hint.
+    pub workspace_path: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "data")]
 pub enum EventData {
     WindowFocus {
@@ -42,6 +50,14 @@ pub enum EventData {
         fingerprint: Hash,
         window_handle: u64,
     },
+    /// Discrete UI / workflow moment (submit, save, finish, …).
+    UiAction {
+        kind: UiActionKind,
+        fingerprint: Hash,
+        window_handle: u64,
+        /// Short human label (button name, dialog title, …).
+        label: Option<String>,
+    },
     IdleStart,
     IdleEnd,
     Gap,
@@ -56,12 +72,69 @@ pub enum EventData {
     },
 }
 
+/// Discrete verbs stored as raw `EventData::UiAction` events (not session children).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum UiActionKind {
+    FormSubmit,
+    Finish,
+    Save,
+    Open,
+    Close,
+    Search,
+    Navigate,
+    Send,
+    Download,
+    Upload,
+    Copy,
+    Paste,
+    SwitchApp,
+    LoadComplete,
+    DialogAccept,
+    DialogCancel,
+    PlayMedia,
+    PauseMedia,
+    MeetingJoin,
+}
+
+impl UiActionKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::FormSubmit => "form_submit",
+            Self::Finish => "finish",
+            Self::Save => "save",
+            Self::Open => "open",
+            Self::Close => "close",
+            Self::Search => "search",
+            Self::Navigate => "navigate",
+            Self::Send => "send",
+            Self::Download => "download",
+            Self::Upload => "upload",
+            Self::Copy => "copy",
+            Self::Paste => "paste",
+            Self::SwitchApp => "switch_app",
+            Self::LoadComplete => "load_complete",
+            Self::DialogAccept => "dialog_accept",
+            Self::DialogCancel => "dialog_cancel",
+            Self::PlayMedia => "play_media",
+            Self::PauseMedia => "pause_media",
+            Self::MeetingJoin => "meeting_join",
+        }
+    }
+
+    /// High-value discrete verbs that can promote a pending session early.
+    pub fn is_momentary(self) -> bool {
+        !matches!(self, Self::MeetingJoin)
+    }
+}
+
 impl EventData {
     pub fn fingerprint(&self) -> Option<Hash> {
         match self {
             EventData::WindowFocus { fingerprint, .. }
             | EventData::TitleChange { fingerprint, .. }
             | EventData::TextChanged { fingerprint, .. }
+            | EventData::UiAction { fingerprint, .. }
             | EventData::AppSeen { fingerprint, .. }
             | EventData::Background { fingerprint } => Some(*fingerprint),
             _ => None,
@@ -73,6 +146,7 @@ impl EventData {
             Self::WindowFocus { .. } => "window_focus",
             Self::TitleChange { .. } => "title_change",
             Self::TextChanged { .. } => "text_changed",
+            Self::UiAction { .. } => "ui_action",
             Self::AppSeen { .. } => "app_seen",
             Self::IdleStart => "idle_start",
             Self::IdleEnd => "idle_end",
@@ -85,6 +159,7 @@ impl EventData {
             EventData::WindowFocus { window_handle, .. }
             | EventData::TitleChange { window_handle, .. }
             | EventData::TextChanged { window_handle, .. }
+            | EventData::UiAction { window_handle, .. }
             | EventData::AppSeen { window_handle, .. } => Some(*window_handle),
             // Background has a fingerprint but no active window handle
             _ => None,
@@ -212,6 +287,7 @@ mod tests {
                 focused_control_type: Some("Edit".into()),
                 automation_id: Some("body".into()),
                 text_changed: true,
+                ..Default::default()
             },
         };
 

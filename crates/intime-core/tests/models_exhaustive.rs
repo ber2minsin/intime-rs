@@ -151,6 +151,17 @@ fn event_helpers_cover_all_variants() {
             Some(3),
             Some(fp),
         ),
+        (
+            EventData::UiAction {
+                kind: intime_core::models::UiActionKind::Save,
+                fingerprint: fp,
+                window_handle: 8,
+                label: Some("Save".into()),
+            },
+            "ui_action",
+            Some(8),
+            Some(fp),
+        ),
         (EventData::IdleStart, "idle_start", None, None),
         (EventData::IdleEnd, "idle_end", None, None),
         (EventData::Gap, "gap", None, None),
@@ -219,6 +230,12 @@ fn every_event_variant_round_trips_through_json() {
             fingerprint: fp,
             window_handle: 3,
         },
+        EventData::UiAction {
+            kind: intime_core::models::UiActionKind::FormSubmit,
+            fingerprint: fp,
+            window_handle: 5,
+            label: Some("Submit".into()),
+        },
         EventData::IdleStart,
         EventData::IdleEnd,
         EventData::Gap,
@@ -243,6 +260,7 @@ fn every_event_variant_round_trips_through_json() {
                 focused_control_type: Some("Edit".into()),
                 automation_id: Some("id".into()),
                 text_changed: true,
+                ..Default::default()
             },
         };
         let json = serde_json::to_string(&event).unwrap();
