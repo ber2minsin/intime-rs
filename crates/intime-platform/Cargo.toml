@@ -18,6 +18,8 @@ tokio-stream = "0.1.19"
 swayipc = "4.0.0"
 ashpd = { version = "0.11", features = ["tokio"] }
 url = "2.5"
+zbus = { version = "5", default-features = false, features = ["tokio"] }
+blake3 = "1.8"
 
 [target.'cfg(target_os="windows")'.dependencies]
 windows = { version = "0.62.2", features = [

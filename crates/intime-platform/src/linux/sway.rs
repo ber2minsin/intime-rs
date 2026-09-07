@@ -1,12 +1,16 @@
 use std::path::Path;
 
 use intime_core::{
-    models::{AppDetails, Event, EventData, EventMetadata},
+    models::{AppDetails, Event, EventData, EventMetadata, UiActionKind},
     time::Timestamp,
 };
 use swayipc::{Connection, Event as SwayEvent, EventType, Node, WindowChange};
 
-use crate::{error::PlatformError, shared::push_event};
+use crate::{
+    error::PlatformError,
+    linux::identity::enrich_app_details,
+    shared::push_event,
+};
 
 pub fn run_event_loop() -> Result<(), PlatformError> {
     let conn = Connection::new()
@@ -55,42 +59,43 @@ fn handle_window_event(change: WindowChange, node: &Node) {
 
     match change {
         WindowChange::Focus => {
+            // AppSeen first so focus can resolve app_id in the same tick.
             push_event(Event {
                 timestamp,
-                data: EventData::WindowFocus {
+                data: EventData::AppSeen {
                     fingerprint,
+                    details: details.clone(),
                     window_handle,
                 },
                 metadata: metadata.clone(),
             });
             push_event(Event {
                 timestamp: Timestamp::now(),
-                data: EventData::AppSeen {
+                data: EventData::WindowFocus {
                     fingerprint,
-                    details,
                     window_handle,
                 },
-                metadata: EventMetadata::default(),
+                metadata,
             });
         }
         WindowChange::Title => {
             push_event(Event {
                 timestamp,
-                data: EventData::TitleChange {
+                data: EventData::AppSeen {
                     fingerprint,
-                    new_title: details.title.clone(),
+                    details: details.clone(),
                     window_handle,
                 },
                 metadata: metadata.clone(),
             });
             push_event(Event {
                 timestamp: Timestamp::now(),
-                data: EventData::AppSeen {
+                data: EventData::TitleChange {
                     fingerprint,
-                    details,
+                    new_title: details.title.clone(),
                     window_handle,
                 },
-                metadata: EventMetadata::default(),
+                metadata,
             });
         }
         WindowChange::New => {
@@ -100,6 +105,28 @@ fn handle_window_event(change: WindowChange, node: &Node) {
                     fingerprint,
                     details,
                     window_handle,
+                },
+                metadata: metadata.clone(),
+            });
+            push_event(Event {
+                timestamp: Timestamp::now(),
+                data: EventData::UiAction {
+                    kind: UiActionKind::Open,
+                    fingerprint,
+                    window_handle,
+                    label: metadata.window_title.clone(),
+                },
+                metadata,
+            });
+        }
+        WindowChange::Close => {
+            push_event(Event {
+                timestamp,
+                data: EventData::UiAction {
+                    kind: UiActionKind::Finish,
+                    fingerprint,
+                    window_handle,
+                    label: metadata.window_title.clone(),
                 },
                 metadata,
             });
@@ -119,7 +146,7 @@ pub fn app_details_from_node(node: &Node) -> Option<AppDetails> {
             .map(|s| s.to_string_lossy().into_owned())
     });
 
-    Some(AppDetails {
+    let details = AppDetails {
         title,
         file_path,
         aumid: app_id,
@@ -127,7 +154,8 @@ pub fn app_details_from_node(node: &Node) -> Option<AppDetails> {
         product_name,
         version_info: None,
         signature_info: None,
-    })
+    };
+    Some(enrich_app_details(details))
 }
 
 pub fn find_node_by_id(root: &Node, id: i64) -> Option<&Node> {

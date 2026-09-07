@@ -12,6 +12,10 @@ impl LinuxEventSource {
                 tracing::error!("Linux platform hook thread exited: {e:?}");
             }
         });
+        // Separate thread: MPRIS play/pause from browsers and media apps.
+        std::thread::spawn(|| {
+            crate::linux::mpris::run_event_loop();
+        });
         Self
     }
 }

@@ -59,37 +59,58 @@ impl LinuxCapture {
         decode_png_to_rgb(&output.stdout)
     }
 
+    /// Portal capture always runs on a dedicated thread with its own Tokio
+    /// runtime so we never nest `block_on` inside the daemon's runtime.
     fn capture_with_portal(&self) -> Result<CapturedImage, PlatformError> {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| PlatformError::SynchronizationError(e.to_string()))?;
-
-        rt.block_on(async {
-            let response = Screenshot::request()
-                .interactive(false)
-                .modal(false)
-                .send()
-                .await
-                .map_err(|e| {
-                    PlatformError::Other(anyhow::anyhow!("Portal screenshot request: {e}"))
-                })?
-                .response()
-                .map_err(|e| {
-                    PlatformError::Other(anyhow::anyhow!("Portal screenshot response: {e}"))
-                })?;
-
-            let uri = response.uri().clone();
-            let path = url_to_path(&uri)?;
-
-            let bytes = std::fs::read(&path).map_err(|e| {
-                PlatformError::Other(anyhow::anyhow!("Failed to read portal screenshot: {e}"))
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::Builder::new()
+            .name("intime-portal-screenshot".into())
+            .spawn(move || {
+                let result = run_portal_capture();
+                let _ = tx.send(result);
+            })
+            .map_err(|e| {
+                PlatformError::Other(anyhow::anyhow!("Failed to spawn portal screenshot thread: {e}"))
             })?;
-            let _ = std::fs::remove_file(&path);
 
-            decode_image_bytes(&bytes)
-        })
+        rx.recv().map_err(|_| {
+            PlatformError::Other(anyhow::anyhow!(
+                "Portal screenshot thread exited without result"
+            ))
+        })?
     }
+}
+
+fn run_portal_capture() -> Result<CapturedImage, PlatformError> {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| PlatformError::SynchronizationError(e.to_string()))?;
+
+    rt.block_on(async {
+        let response = Screenshot::request()
+            .interactive(false)
+            .modal(false)
+            .send()
+            .await
+            .map_err(|e| {
+                PlatformError::Other(anyhow::anyhow!("Portal screenshot request: {e}"))
+            })?
+            .response()
+            .map_err(|e| {
+                PlatformError::Other(anyhow::anyhow!("Portal screenshot response: {e}"))
+            })?;
+
+        let uri = response.uri().clone();
+        let path = url_to_path(&uri)?;
+
+        let bytes = std::fs::read(&path).map_err(|e| {
+            PlatformError::Other(anyhow::anyhow!("Failed to read portal screenshot: {e}"))
+        })?;
+        let _ = std::fs::remove_file(&path);
+
+        decode_image_bytes(&bytes)
+    })
 }
 
 impl ScreenshotSource for LinuxCapture {
@@ -97,6 +118,13 @@ impl ScreenshotSource for LinuxCapture {
         if self.prefer_grim {
             match self.capture_with_grim(handle) {
                 Ok(img) => return Ok(img),
+                // Closed / unknown windows must not open an interactive portal.
+                Err(PlatformError::InvalidWindow) => {
+                    tracing::debug!(
+                        "grim: window {handle} gone or invalid; skipping portal fallback"
+                    );
+                    return Err(PlatformError::InvalidWindow);
+                }
                 Err(e) => {
                     tracing::warn!("grim capture failed ({e:?}), falling back to portal");
                 }
@@ -169,5 +197,27 @@ mod tests {
     #[test]
     fn rejects_empty_bytes() {
         assert!(decode_image_bytes(b"").is_err());
+    }
+
+    #[test]
+    fn portal_capture_does_not_panic_inside_tokio_runtime() {
+        // Regression: nested block_on used to panic the daemon when grim
+        // failed and fell back to portal while already on a Tokio worker.
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async {
+            let capture = LinuxCapture { prefer_grim: false };
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                capture.capture_with_portal()
+            }));
+            assert!(
+                result.is_ok(),
+                "portal capture must not panic inside an existing runtime"
+            );
+            // Portal may fail for missing compositor / permission; that is fine.
+            let _ = result.unwrap();
+        });
     }
 }

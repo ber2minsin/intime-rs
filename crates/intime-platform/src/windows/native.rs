@@ -155,26 +155,51 @@ pub unsafe extern "system" fn win_event_proc(
                 }
             };
             if let Some(data) = event_data {
+                // AppSeen first so subsequent focus/title can resolve app_id.
                 push_event(Event {
                     timestamp,
+                    data: EventData::AppSeen {
+                        fingerprint,
+                        details: details.clone(),
+                        window_handle: hwnd.0 as u64,
+                    },
+                    metadata: metadata.clone(),
+                });
+                push_event(Event {
+                    timestamp: Timestamp::now(),
                     data,
                     metadata: metadata.clone(),
                 });
-            }
 
-            // TODO maybe add a cache so we do not trigger this every time
-            // also we can add this to outside of the if else, to log even the
-            // system related events
-            push_event(Event {
-                timestamp: Timestamp::now(),
-                data: EventData::AppSeen {
-                    fingerprint,
-                    details,
-                    window_handle: hwnd.0 as u64,
-                },
-                metadata,
-            });
-        }
+                // Discrete actions from focused control names on value changes (Submit / Save / …).
+                if event == EVENT_OBJECT_VALUECHANGE {
+                    if let Some(kind) = intime_core::context::guess_ui_action_from_control(
+                        metadata.focused_element.as_deref().unwrap_or(""),
+                        metadata.focused_control_type.as_deref(),
+                    ) {
+                        push_event(Event {
+                            timestamp: Timestamp::now(),
+                            data: EventData::UiAction {
+                                kind,
+                                fingerprint,
+                                window_handle: hwnd.0 as u64,
+                                label: metadata.focused_element.clone(),
+                            },
+                            metadata: metadata.clone(),
+                        });
+                    }
+                }
+            } else {
+                push_event(Event {
+                    timestamp: Timestamp::now(),
+                    data: EventData::AppSeen {
+                        fingerprint,
+                        details,
+                        window_handle: hwnd.0 as u64,
+                    },
+                    metadata,
+                });
+            }
     }
 }
 
