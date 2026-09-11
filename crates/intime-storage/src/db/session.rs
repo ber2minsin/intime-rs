@@ -81,11 +81,59 @@ impl SessionRepository for SqliteRepository {
     }
 
     async fn reopen_session(&self, session_id: i64) -> Result<(), StorageError> {
-        sqlx::query("UPDATE session SET ended_at = NULL, ended_reason = NULL WHERE id = ?")
-            .bind(session_id)
-            .execute(&self.pool)
-            .await?;
+        sqlx::query(
+            "UPDATE session SET ended_at = NULL, ended_reason = NULL, summary = NULL WHERE id = ?",
+        )
+        .bind(session_id)
+        .execute(&self.pool)
+        .await?;
         Ok(())
+    }
+
+    async fn refine_session(
+        &self,
+        session_id: i64,
+        intent: Option<&str>,
+        title: Option<&str>,
+        category_id: Option<i64>,
+        context_key: Option<&str>,
+    ) -> Result<(), StorageError> {
+        sqlx::query(
+            "UPDATE session SET
+               intent = COALESCE(?, intent),
+               title = COALESCE(?, title),
+               category_id = COALESCE(?, category_id),
+               context_key = COALESCE(?, context_key)
+             WHERE id = ? AND ended_at IS NULL",
+        )
+        .bind(intent)
+        .bind(title)
+        .bind(category_id)
+        .bind(context_key)
+        .bind(session_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn close_orphaned_open_sessions(
+        &self,
+        ended_at: DateTime<Utc>,
+        keep_id: Option<i64>,
+        ended_reason: &str,
+    ) -> Result<u64, StorageError> {
+        let result = sqlx::query(
+            "UPDATE session SET ended_at = ?, ended_reason = COALESCE(ended_reason, ?),
+             summary = COALESCE(summary, 'orphan recovered')
+             WHERE ended_at IS NULL AND (? IS NULL OR id != ?)",
+        )
+        .bind(ended_at)
+        .bind(ended_reason)
+        .bind(keep_id)
+        .bind(keep_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected())
     }
 
     async fn set_session_app_id(&self, session_id: i64, app_id: i64) -> Result<(), StorageError> {

@@ -80,8 +80,10 @@ pub struct SessionPromotionPolicy {
 impl Default for SessionPromotionPolicy {
     fn default() -> Self {
         Self {
-            min_duration_secs: 20,
-            min_meaningful_events: 3,
+            // Heartbeats often carry the same title without observe(); keep this short
+            // so a real title_change + dwell still opens before the user switches away.
+            min_duration_secs: 8,
+            min_meaningful_events: 2,
         }
     }
 }

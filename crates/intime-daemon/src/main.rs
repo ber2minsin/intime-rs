@@ -21,7 +21,15 @@ use tracing_subscriber::{
 };
 
 fn setup_tracing() -> tracing_appender::non_blocking::WorkerGuard {
-    let file_appender = tracing_appender::rolling::never(".", "intime-daemon.log");
+    // Stable path for observability: ~/.local/state/intime/intime-daemon.log
+    let log_dir = env::var_os("XDG_STATE_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".local/state")))
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("intime");
+    let _ = std::fs::create_dir_all(&log_dir);
+
+    let file_appender = tracing_appender::rolling::daily(&log_dir, "intime-daemon.log");
     let (file_writer, guard) = tracing_appender::non_blocking(file_appender);
 
     let file_layer = fmt::layer()
@@ -38,6 +46,7 @@ fn setup_tracing() -> tracing_appender::non_blocking::WorkerGuard {
         .with(file_layer)
         .init();
 
+    info!(log_dir = %log_dir.display(), "Logging to state directory");
     guard
 }
 
@@ -174,7 +183,7 @@ async fn main() -> Result<()> {
                         &mut screenshot_orchestrator,
                         embedtx.clone(),
                         &tracker_flags,
-                        &sessions,
+                        &mut sessions,
                     )
                     .await
                     {

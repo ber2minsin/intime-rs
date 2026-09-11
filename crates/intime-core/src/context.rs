@@ -31,9 +31,12 @@ pub fn enrich_from_window_title(meta: &mut EventMetadata, product_hint: Option<&
         if meta.document_name.is_none() {
             meta.document_name = Some(strip_browser_suffix(&title));
         }
-        sanitize_stale_url(meta);
+        sanitize_stale_url_with_hint(meta, product_hint);
         return;
     }
+
+    // Non-browser: never keep a leaked document URL on this event.
+    sanitize_stale_url_with_hint(meta, product_hint);
 
     if looks_like_editor(&hint, &title) {
         if let Some((file, workspace)) = parse_editor_title(&title) {
@@ -50,20 +53,77 @@ pub fn enrich_from_window_title(meta: &mut EventMetadata, product_hint: Option<&
     }
 }
 
-/// Drop a document URL that clearly disagrees with the window title site hint.
+/// Drop a document URL that clearly disagrees with the window / app.
 ///
-/// AT-SPI sometimes returns a stale DocumentWeb URL from another tab/frame
-/// (e.g. title says Netflix while URL is still github.com).
+/// AT-SPI sometimes returns a stale DocumentWeb URL from another window
+/// (system trays, dialogs, editors). Document URLs only belong on browsers
+/// or MPRIS player events.
 pub fn sanitize_stale_url(meta: &mut EventMetadata) {
-    let Some(url) = meta.url.as_deref() else {
+    sanitize_stale_url_with_hint(meta, None);
+}
+
+/// Drop leaked / conflicting document URLs.
+pub fn sanitize_stale_url_with_hint(meta: &mut EventMetadata, product_hint: Option<&str>) {
+    if meta.url.is_none() {
         return;
-    };
-    let Some(title) = meta.window_title.as_deref() else {
+    }
+
+    let hint = product_hint.unwrap_or("").to_ascii_lowercase();
+    let path = meta
+        .executable_path
+        .as_deref()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let title = meta.window_title.as_deref().unwrap_or("");
+    let is_mpris = meta.focused_control_type.as_deref() == Some("mpris");
+
+    // System trays / settings applets are never document surfaces.
+    if is_system_utility_app(&hint, &path, title) {
+        meta.url = None;
+        return;
+    }
+
+    let url_ok_here = is_mpris
+        || looks_like_browser(&hint, title)
+        || path_looks_like_browser(&path);
+
+    if !url_ok_here {
+        meta.url = None;
+        return;
+    }
+
+    let Some(url) = meta.url.as_deref() else {
         return;
     };
     if url_conflicts_with_title(url, title) {
         meta.url = None;
     }
+}
+
+/// System trays / connection dialogs — persist events, but never own a session.
+pub fn is_system_utility_app(product_hint: &str, executable_path: &str, title: &str) -> bool {
+    let blob = format!(
+        "{} {} {}",
+        product_hint.to_ascii_lowercase(),
+        executable_path.to_ascii_lowercase(),
+        title.to_ascii_lowercase()
+    );
+    const MARKERS: &[&str] = &[
+        "blueman",
+        "bluetooth",
+        "pavucontrol",
+        "pulseaudio",
+        "volume control",
+        "gnome-control-center",
+        "nm-connection-editor",
+        "networkmanager",
+        "kdeconnect",
+        "notify-osd",
+        "xdg-desktop-portal",
+        "polkit",
+        "fwupd",
+    ];
+    MARKERS.iter().any(|m| blob.contains(m))
 }
 
 fn url_conflicts_with_title(url: &str, title: &str) -> bool {
@@ -73,7 +133,7 @@ fn url_conflicts_with_title(url: &str, title: &str) -> bool {
     let title_l = title.to_ascii_lowercase();
     let host_l = url_host.to_ascii_lowercase();
 
-    // Known site tokens in titles → expected host fragments.
+    // Site tokens in titles → expected host fragments.
     const HINTS: &[(&str, &[&str])] = &[
         ("netflix", &["netflix.com"]),
         ("youtube", &["youtube.com", "youtu.be"]),
@@ -89,7 +149,6 @@ fn url_conflicts_with_title(url: &str, title: &str) -> bool {
         (" / x", &["x.com", "twitter.com"]),
         ("gmail", &["mail.google.com", "gmail.com"]),
         ("google search", &["google."]),
-        ("tft flow", &["tftflow.com", "tft"]),
         ("github", &["github.com"]),
     ];
 
@@ -104,6 +163,12 @@ fn url_conflicts_with_title(url: &str, title: &str) -> bool {
         return false;
     };
     !expected.iter().any(|h| host_l.contains(h))
+}
+
+fn path_looks_like_browser(path_l: &str) -> bool {
+    ["brave", "chrome", "chromium", "firefox", "msedge", "opera", "vivaldi"]
+        .iter()
+        .any(|b| path_l.contains(b))
 }
 
 fn url_host(url: &str) -> Option<String> {
@@ -459,7 +524,7 @@ mod tests {
     fn drops_stale_url_that_conflicts_with_title() {
         let mut meta = EventMetadata {
             window_title: Some("Community - Netflix - Brave".into()),
-            url: Some("https://github.com/ber2minsin/intime-rs/tree/main".into()),
+            url: Some("https://github.com/example/repo/tree/main".into()),
             ..Default::default()
         };
         sanitize_stale_url(&mut meta);
@@ -474,6 +539,59 @@ mod tests {
         assert_eq!(
             ok.url.as_deref(),
             Some("https://www.netflix.com/title/80100172")
+        );
+    }
+
+    #[test]
+    fn drops_document_url_on_non_browser_windows() {
+        // AT-SPI can leak a DocumentWeb URL onto trays / dialogs / editors.
+        let mut utility = EventMetadata {
+            window_title: Some("Device-ABCD".into()),
+            url: Some("https://www.youtube.com/watch?v=exampleVideoId".into()),
+            executable_path: Some("/usr/bin/python3".into()),
+            ..Default::default()
+        };
+        sanitize_stale_url_with_hint(&mut utility, Some("blueman-applet"));
+        assert!(utility.url.is_none());
+        assert!(is_system_utility_app(
+            "blueman-applet",
+            "/usr/bin/python3",
+            "Device-ABCD"
+        ));
+
+        // No product hint: still drop — path/title are not a browser.
+        let mut bare = EventMetadata {
+            window_title: Some("Device-ABCD".into()),
+            url: Some("https://www.youtube.com/watch?v=exampleVideoId".into()),
+            executable_path: Some("/usr/bin/python3".into()),
+            ..Default::default()
+        };
+        sanitize_stale_url(&mut bare);
+        assert!(bare.url.is_none());
+
+        let mut editor = EventMetadata {
+            window_title: Some("main.rs — my-project — Cursor".into()),
+            url: Some("https://www.netflix.com/watch/123".into()),
+            executable_path: Some("/usr/share/cursor/cursor".into()),
+            ..Default::default()
+        };
+        sanitize_stale_url_with_hint(&mut editor, Some("cursor"));
+        assert!(editor.url.is_none());
+    }
+
+    #[test]
+    fn keeps_mpris_url_with_bare_track_title() {
+        let mut meta = EventMetadata {
+            window_title: Some("Some Track Name".into()),
+            url: Some("https://www.youtube.com/watch?v=exampleVideoId".into()),
+            focused_control_type: Some("mpris".into()),
+            automation_id: Some("brave".into()),
+            ..Default::default()
+        };
+        sanitize_stale_url(&mut meta);
+        assert_eq!(
+            meta.url.as_deref(),
+            Some("https://www.youtube.com/watch?v=exampleVideoId")
         );
     }
 

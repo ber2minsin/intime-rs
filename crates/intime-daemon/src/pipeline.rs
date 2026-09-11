@@ -89,7 +89,11 @@ pub async fn handle_incoming_event(
 
     if flags.document_context {
         enrich_from_window_title(&mut event.metadata, product_hint.as_deref());
-        intime_core::context::sanitize_stale_url(&mut event.metadata);
+    } else {
+        intime_core::context::sanitize_stale_url_with_hint(
+            &mut event.metadata,
+            product_hint.as_deref(),
+        );
     }
     flags.sanitize_metadata(&mut event.metadata);
 
@@ -145,6 +149,13 @@ pub async fn handle_incoming_event(
         }
     }
 
+    // System trays / settings: keep raw events, never drive sessions.
+    let utility = intime_core::context::is_system_utility_app(
+        product_hint.as_deref().or(display_name.as_deref()).unwrap_or(""),
+        event.metadata.executable_path.as_deref().unwrap_or(""),
+        event.metadata.window_title.as_deref().unwrap_or(""),
+    );
+
     let input = match_input_from_event(
         &event,
         aumid,
@@ -160,10 +171,14 @@ pub async fn handle_incoming_event(
         None => (None, "unknown"),
     };
 
-    let session_id = sessions
-        .observe(storage, &event, app_id, hit, slug, product_hint.as_deref())
-        .await
-        .context("session tracker")?;
+    let session_id = if utility {
+        None
+    } else {
+        sessions
+            .observe(storage, &event, app_id, hit, slug, product_hint.as_deref())
+            .await
+            .context("session tracker")?
+    };
 
     let image_path = if flags.screenshots_enabled {
         match screenshot_orchestrator.process_event(&event) {
@@ -218,9 +233,11 @@ pub async fn handle_heartbeat_capture(
     screenshot_orchestrator: &mut ScreenshotOrchestrator,
     embedding_queue: mpsc::Sender<EmbeddingTask>,
     flags: &FeatureFlags,
-    sessions: &SessionTracker,
+    sessions: &mut SessionTracker,
 ) -> Result<HeartbeatOutcome> {
     if !flags.screenshots_enabled {
+        // Still advance session dwell so pending promotes without screenshots.
+        let _ = sessions.tick(storage, Timestamp::now()).await?;
         return Ok(HeartbeatOutcome::Skipped);
     }
 
@@ -235,10 +252,13 @@ pub async fn handle_heartbeat_capture(
                 return Ok(HeartbeatOutcome::StaleFocus);
             }
             warn!("Heartbeat screenshot skipped: {e:#}");
+            // Promote by dwell even when capture fails.
+            let _ = sessions.tick(storage, event.timestamp).await?;
             return Ok(HeartbeatOutcome::Skipped);
         }
     };
     let Some(path) = image_path else {
+        let _ = sessions.tick(storage, event.timestamp).await?;
         return Ok(HeartbeatOutcome::Skipped);
     };
 
@@ -247,7 +267,10 @@ pub async fn handle_heartbeat_capture(
     } else {
         None
     };
-    let session_id = sessions.current_session_id();
+    let session_id = sessions
+        .tick(storage, event.timestamp)
+        .await
+        .context("session tick")?;
 
     let event_id = storage
         .event_repository

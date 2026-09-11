@@ -53,6 +53,24 @@ pub trait SessionRepository: Send + Sync {
     /// Clear `ended_at` so the session continues (same video / same context).
     async fn reopen_session(&self, session_id: i64) -> Result<(), StorageError>;
 
+    /// Refine identity of an open session (media URL id, better title, category upgrade).
+    async fn refine_session(
+        &self,
+        session_id: i64,
+        intent: Option<&str>,
+        title: Option<&str>,
+        category_id: Option<i64>,
+        context_key: Option<&str>,
+    ) -> Result<(), StorageError>;
+
+    /// Close every open session except `keep_id` (recovers orphans after restart / lost tracker state).
+    async fn close_orphaned_open_sessions(
+        &self,
+        ended_at: DateTime<Utc>,
+        keep_id: Option<i64>,
+        ended_reason: &str,
+    ) -> Result<u64, StorageError>;
+
     /// Backfill `app_id` when media started via MPRIS before the browser AppSeen.
     async fn set_session_app_id(&self, session_id: i64, app_id: i64) -> Result<(), StorageError>;
 

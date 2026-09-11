@@ -1328,3 +1328,645 @@ async fn steam_game_session_and_list_sessions_query() {
         .unwrap();
     assert_eq!(listed.len(), 1);
 }
+
+#[tokio::test]
+async fn day_in_life_style_sessions_do_not_fragment_or_orphan() {
+    // Mirrors the manual audit: nvim → 2 YT → DBeaver → 2 Netflix.
+    let mut h = PipelineHarness::new(Duration::from_secs(60)).await;
+    h.flags.screenshots_enabled = false;
+    h.flags.embeddings_enabled = false;
+
+    let foot = AppDetails {
+        title: "nvim ~/D/w/r/intime-rs".into(),
+        file_path: "/usr/bin/foot".into(),
+        aumid: None,
+        company_name: Some("foot".into()),
+        product_name: Some("foot".into()),
+        version_info: None,
+        signature_info: None,
+    };
+    let foot_fp = foot.fingerprint();
+    let brave = AppDetails {
+        title: "Video One - YouTube - Brave".into(),
+        file_path: "/opt/brave.com/brave/brave".into(),
+        aumid: Some("brave-browser".into()),
+        company_name: Some("Brave Software".into()),
+        product_name: Some("brave-browser".into()),
+        version_info: None,
+        signature_info: None,
+    };
+    let brave_fp = brave.fingerprint();
+    let dbeaver = AppDetails {
+        title: "DBeaver 26.1.4 - event".into(),
+        file_path: "/usr/bin/dbeaver".into(),
+        aumid: None,
+        company_name: Some("DBeaver Corp".into()),
+        product_name: Some("DBeaver".into()),
+        version_info: None,
+        signature_info: None,
+    };
+    let dbeaver_fp = dbeaver.fingerprint();
+    let mpris_fp = blake3::hash(b"mpris\x1fbrave");
+
+    h.handle(Event {
+        timestamp: Timestamp::now(),
+        data: EventData::AppSeen {
+            fingerprint: foot_fp,
+            details: foot.clone(),
+            window_handle: 10,
+        },
+        metadata: EventMetadata {
+            window_title: Some(foot.title.clone()),
+            executable_path: Some(foot.file_path.clone()),
+            ..Default::default()
+        },
+    })
+    .await;
+    for _ in 0..3 {
+        h.handle(Event {
+            timestamp: Timestamp::now(),
+            data: EventData::WindowFocus {
+                fingerprint: foot_fp,
+                window_handle: 10,
+            },
+            metadata: EventMetadata {
+                window_title: Some("nvim ~/D/w/r/intime-rs".into()),
+                ..Default::default()
+            },
+        })
+        .await;
+    }
+
+    h.handle(Event {
+        timestamp: Timestamp::now(),
+        data: EventData::AppSeen {
+            fingerprint: brave_fp,
+            details: brave.clone(),
+            window_handle: 80,
+        },
+        metadata: EventMetadata {
+            window_title: Some("(1) Video One - YouTube - Brave".into()),
+            executable_path: Some(brave.file_path.clone()),
+            ..Default::default()
+        },
+    })
+    .await;
+    h.handle(Event {
+        timestamp: Timestamp::now(),
+        data: EventData::UiAction {
+            kind: intime_core::models::UiActionKind::PlayMedia,
+            fingerprint: mpris_fp,
+            window_handle: 999,
+            label: Some("Video One".into()),
+        },
+        metadata: EventMetadata {
+            window_title: Some("Video One".into()),
+            url: Some("https://www.youtube.com/watch?v=ytOne111".into()),
+            focused_control_type: Some("mpris".into()),
+            automation_id: Some("brave".into()),
+            ..Default::default()
+        },
+    })
+    .await;
+    h.handle(Event {
+        timestamp: Timestamp::now(),
+        data: EventData::TitleChange {
+            fingerprint: brave_fp,
+            new_title: "(1) Video Two - YouTube - Brave".into(),
+            window_handle: 80,
+        },
+        metadata: EventMetadata {
+            window_title: Some("(1) Video Two - YouTube - Brave".into()),
+            url: Some("https://www.youtube.com/watch?v=ytTwo222".into()),
+            ..Default::default()
+        },
+    })
+    .await;
+    h.handle(Event {
+        timestamp: Timestamp::now(),
+        data: EventData::UiAction {
+            kind: intime_core::models::UiActionKind::PlayMedia,
+            fingerprint: mpris_fp,
+            window_handle: 999,
+            label: Some("Video Two".into()),
+        },
+        metadata: EventMetadata {
+            window_title: Some("Video Two".into()),
+            url: Some("https://www.youtube.com/watch?v=ytTwo222".into()),
+            focused_control_type: Some("mpris".into()),
+            automation_id: Some("brave".into()),
+            ..Default::default()
+        },
+    })
+    .await;
+
+    h.handle(Event {
+        timestamp: Timestamp::now(),
+        data: EventData::AppSeen {
+            fingerprint: dbeaver_fp,
+            details: dbeaver.clone(),
+            window_handle: 30,
+        },
+        metadata: EventMetadata {
+            window_title: Some(dbeaver.title.clone()),
+            executable_path: Some(dbeaver.file_path.clone()),
+            ..Default::default()
+        },
+    })
+    .await;
+    for title in [
+        "DBeaver 26.1.4 - event",
+        "DBeaver 26.1.4 - session",
+        "DBeaver 26.1.4 - query",
+    ] {
+        h.handle(Event {
+            timestamp: Timestamp::now(),
+            data: EventData::WindowFocus {
+                fingerprint: dbeaver_fp,
+                window_handle: 30,
+            },
+            metadata: EventMetadata {
+                window_title: Some(title.into()),
+                ..Default::default()
+            },
+        })
+        .await;
+    }
+
+    h.handle(Event {
+        timestamp: Timestamp::now(),
+        data: EventData::AppSeen {
+            fingerprint: brave_fp,
+            details: brave.clone(),
+            window_handle: 80,
+        },
+        metadata: EventMetadata {
+            window_title: Some("Friends - Netflix - Brave".into()),
+            executable_path: Some(brave.file_path.clone()),
+            url: Some("https://www.netflix.com/watch/70155589".into()),
+            ..Default::default()
+        },
+    })
+    .await;
+    h.handle(Event {
+        timestamp: Timestamp::now(),
+        data: EventData::TitleChange {
+            fingerprint: brave_fp,
+            new_title: "Friends - Netflix - Brave".into(),
+            window_handle: 80,
+        },
+        metadata: EventMetadata {
+            window_title: Some("Friends - Netflix - Brave".into()),
+            url: Some("https://www.netflix.com/watch/70155589".into()),
+            ..Default::default()
+        },
+    })
+    .await;
+    for _ in 0..2 {
+        h.handle(Event {
+            timestamp: Timestamp::now(),
+            data: EventData::WindowFocus {
+                fingerprint: brave_fp,
+                window_handle: 80,
+            },
+            metadata: EventMetadata {
+                window_title: Some("Friends - Netflix - Brave".into()),
+                url: Some("https://www.netflix.com/watch/70155589".into()),
+                ..Default::default()
+            },
+        })
+        .await;
+    }
+    h.handle(Event {
+        timestamp: Timestamp::now(),
+        data: EventData::TitleChange {
+            fingerprint: brave_fp,
+            new_title: "Community - Netflix - Brave".into(),
+            window_handle: 80,
+        },
+        metadata: EventMetadata {
+            window_title: Some("Community - Netflix - Brave".into()),
+            url: Some("https://www.netflix.com/watch/70251221".into()),
+            ..Default::default()
+        },
+    })
+    .await;
+    for _ in 0..2 {
+        h.handle(Event {
+            timestamp: Timestamp::now(),
+            data: EventData::WindowFocus {
+                fingerprint: brave_fp,
+                window_handle: 80,
+            },
+            metadata: EventMetadata {
+                window_title: Some("Community - Netflix - Brave".into()),
+                url: Some("https://www.netflix.com/watch/70251221".into()),
+                ..Default::default()
+            },
+        })
+        .await;
+    }
+
+    h.handle(Event {
+        timestamp: Timestamp::now(),
+        data: EventData::IdleStart,
+        metadata: Default::default(),
+    })
+    .await;
+
+    let sessions: Vec<(Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT intent, context_key, ended_at FROM session ORDER BY id",
+    )
+    .fetch_all(&h.db.pool)
+    .await
+    .unwrap();
+
+    let open: Vec<_> = sessions.iter().filter(|(_, _, e)| e.is_none()).collect();
+    assert!(open.is_empty(), "orphan open sessions: {sessions:?}");
+
+    let keys: Vec<&str> = sessions
+        .iter()
+        .filter_map(|(_, k, _)| k.as_deref())
+        .collect();
+    for expected in [
+        "ws:intime-rs",
+        "media:yt:ytOne111",
+        "media:yt:ytTwo222",
+        "media:nf:70155589",
+        "media:nf:70251221",
+    ] {
+        assert!(
+            keys.iter().any(|k| *k == expected),
+            "missing {expected} in {sessions:?}"
+        );
+    }
+    assert!(
+        !sessions
+            .iter()
+            .any(|(i, _, _)| i.as_deref() == Some("media_local")),
+        "browser YouTube must not be media_local: {sessions:?}"
+    );
+    assert!(
+        sessions.len() >= 6 && sessions.len() <= 7,
+        "unexpected session count: {sessions:?}"
+    );
+}
+
+#[tokio::test]
+async fn pending_is_promoted_before_context_switch() {
+    // Regression: Community title_change then Home chrome used to wipe pending
+    // without opening a session — user saw only "Netflix - Brave".
+    let mut h = PipelineHarness::new(Duration::from_secs(60)).await;
+    h.flags.screenshots_enabled = false;
+    h.flags.embeddings_enabled = false;
+
+    let brave = AppDetails {
+        title: "Community - Netflix - Brave".into(),
+        file_path: "/opt/brave.com/brave/brave".into(),
+        aumid: Some("brave-browser".into()),
+        company_name: Some("Brave Software".into()),
+        product_name: Some("brave-browser".into()),
+        version_info: None,
+        signature_info: None,
+    };
+    let fp = brave.fingerprint();
+
+    h.handle(Event {
+        timestamp: Timestamp::now(),
+        data: EventData::AppSeen {
+            fingerprint: fp,
+            details: brave.clone(),
+            window_handle: 80,
+        },
+        metadata: EventMetadata {
+            window_title: Some(brave.title.clone()),
+            executable_path: Some(brave.file_path.clone()),
+            url: Some("https://www.netflix.com/watch/70251221".into()),
+            ..Default::default()
+        },
+    })
+    .await;
+
+    h.handle(Event {
+        timestamp: Timestamp::now(),
+        data: EventData::TitleChange {
+            fingerprint: fp,
+            new_title: "Community - Netflix - Brave".into(),
+            window_handle: 80,
+        },
+        metadata: EventMetadata {
+            window_title: Some("Community - Netflix - Brave".into()),
+            url: Some("https://www.netflix.com/watch/70251221".into()),
+            ..Default::default()
+        },
+    })
+    .await;
+
+    // Switch to feed chrome — must not abandon Community without a session row.
+    h.handle(Event {
+        timestamp: Timestamp::now(),
+        data: EventData::TitleChange {
+            fingerprint: fp,
+            new_title: "Home - Netflix - Brave".into(),
+            window_handle: 80,
+        },
+        metadata: EventMetadata {
+            window_title: Some("Home - Netflix - Brave".into()),
+            url: Some("https://www.netflix.com/browse".into()),
+            ..Default::default()
+        },
+    })
+    .await;
+
+    h.handle(Event {
+        timestamp: Timestamp::now(),
+        data: EventData::IdleStart,
+        metadata: Default::default(),
+    })
+    .await;
+
+    let sessions: Vec<(Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT intent, context_key, title FROM session ORDER BY id",
+    )
+    .fetch_all(&h.db.pool)
+    .await
+    .unwrap();
+
+    assert!(
+        sessions
+            .iter()
+            .any(|(_, k, _)| k.as_deref() == Some("media:nf:70251221")),
+        "Community watch must become a session: {sessions:?}"
+    );
+    assert!(
+        sessions.iter().any(|(_, _, t)| {
+            t.as_deref()
+                .is_some_and(|t| t.to_ascii_lowercase().contains("community"))
+        }),
+        "session title must keep Community, not bare Netflix: {sessions:?}"
+    );
+}
+
+#[tokio::test]
+async fn twitter_post_is_its_own_session_not_feed_chrome() {
+    let mut h = PipelineHarness::new(Duration::from_secs(60)).await;
+    h.flags.screenshots_enabled = false;
+    h.flags.embeddings_enabled = false;
+
+    let brave = AppDetails {
+        title: "Hunter Biden Announces $LAPTOP / X - Brave".into(),
+        file_path: "/opt/brave.com/brave/brave".into(),
+        aumid: Some("brave-browser".into()),
+        company_name: Some("Brave Software".into()),
+        product_name: Some("brave-browser".into()),
+        version_info: None,
+        signature_info: None,
+    };
+    let fp = brave.fingerprint();
+
+    h.handle(Event {
+        timestamp: Timestamp::now(),
+        data: EventData::AppSeen {
+            fingerprint: fp,
+            details: brave.clone(),
+            window_handle: 80,
+        },
+        metadata: EventMetadata {
+            window_title: Some(brave.title.clone()),
+            executable_path: Some(brave.file_path.clone()),
+            ..Default::default()
+        },
+    })
+    .await;
+
+    h.handle(Event {
+        timestamp: Timestamp::now(),
+        data: EventData::TitleChange {
+            fingerprint: fp,
+            new_title: "Hunter Biden Announces $LAPTOP / X - Brave".into(),
+            window_handle: 80,
+        },
+        metadata: EventMetadata {
+            window_title: Some("Hunter Biden Announces $LAPTOP / X - Brave".into()),
+            ..Default::default()
+        },
+    })
+    .await;
+
+    // Returning to Home must not rename the post session to feed chrome.
+    h.handle(Event {
+        timestamp: Timestamp::now(),
+        data: EventData::TitleChange {
+            fingerprint: fp,
+            new_title: "Home / X - Brave".into(),
+            window_handle: 80,
+        },
+        metadata: EventMetadata {
+            window_title: Some("Home / X - Brave".into()),
+            ..Default::default()
+        },
+    })
+    .await;
+
+    h.handle(Event {
+        timestamp: Timestamp::now(),
+        data: EventData::IdleStart,
+        metadata: Default::default(),
+    })
+    .await;
+
+    let sessions: Vec<(Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT intent, context_key, title FROM session ORDER BY id",
+    )
+    .fetch_all(&h.db.pool)
+    .await
+    .unwrap();
+
+    assert!(
+        sessions.iter().any(|(_, k, t)| {
+            k.as_deref()
+                .is_some_and(|k| k.starts_with("social:x.com:hunter"))
+                && t.as_deref()
+                    .is_some_and(|t| t.to_ascii_lowercase().contains("hunter"))
+        }),
+        "tweet must be its own titled session: {sessions:?}"
+    );
+    assert!(
+        !sessions
+            .iter()
+            .any(|(_, _, t)| t.as_deref() == Some("Home / X - Brave")),
+        "feed chrome must not become the session title: {sessions:?}"
+    );
+}
+
+
+#[tokio::test]
+async fn blueman_device_does_not_become_youtube_session() {
+    let mut h = PipelineHarness::new(Duration::from_secs(60)).await;
+    h.flags.screenshots_enabled = false;
+    h.flags.embeddings_enabled = false;
+
+    let blueman = AppDetails {
+        title: "Piranha-7828".into(),
+        file_path: "/usr/bin/python3.13".into(),
+        aumid: Some("blueman-applet".into()),
+        company_name: Some("Freedesktop".into()),
+        product_name: Some("blueman-applet".into()),
+        version_info: None,
+        signature_info: None,
+    };
+    let fp = blueman.fingerprint();
+
+    h.handle(Event {
+        timestamp: Timestamp::now(),
+        data: EventData::AppSeen {
+            fingerprint: fp,
+            details: blueman.clone(),
+            window_handle: 273,
+        },
+        metadata: EventMetadata {
+            window_title: Some("Piranha-7828".into()),
+            executable_path: Some(blueman.file_path.clone()),
+            url: Some("https://www.youtube.com/watch?v=uwUE-g8kMtI".into()),
+            ..Default::default()
+        },
+    })
+    .await;
+
+    for _ in 0..3 {
+        h.handle(Event {
+            timestamp: Timestamp::now(),
+            data: EventData::TitleChange {
+                fingerprint: fp,
+                new_title: "Piranha-7828".into(),
+                window_handle: 273,
+            },
+            metadata: EventMetadata {
+                window_title: Some("Piranha-7828".into()),
+                executable_path: Some(blueman.file_path.clone()),
+                url: Some("https://www.youtube.com/watch?v=uwUE-g8kMtI".into()),
+                ..Default::default()
+            },
+        })
+        .await;
+    }
+
+    let sessions: Vec<(Option<String>, Option<String>)> =
+        sqlx::query_as("SELECT intent, context_key FROM session ORDER BY id")
+            .fetch_all(&h.db.pool)
+            .await
+            .unwrap();
+    assert!(
+        sessions.is_empty(),
+        "Bluetooth dialog must not open a media session: {sessions:?}"
+    );
+}
+
+#[tokio::test]
+async fn multitask_keeps_prior_session_open() {
+    let mut h = PipelineHarness::new(Duration::from_secs(60)).await;
+    h.flags.screenshots_enabled = false;
+    h.flags.embeddings_enabled = false;
+
+    let brave = AppDetails {
+        title: "Video - YouTube - Brave".into(),
+        file_path: "/opt/brave.com/brave/brave".into(),
+        aumid: Some("brave-browser".into()),
+        company_name: Some("Brave Software".into()),
+        product_name: Some("brave-browser".into()),
+        version_info: None,
+        signature_info: None,
+    };
+    let brave_fp = brave.fingerprint();
+    let game = AppDetails {
+        title: "Tiny Glade".into(),
+        file_path: "/home/steam/steamapps/common/Tiny Glade/tiny-glade".into(),
+        aumid: Some("steam".into()),
+        company_name: Some("Valve".into()),
+        product_name: Some("Steam".into()),
+        version_info: None,
+        signature_info: None,
+    };
+    let game_fp = game.fingerprint();
+
+    h.handle(Event {
+        timestamp: Timestamp::now(),
+        data: EventData::AppSeen {
+            fingerprint: brave_fp,
+            details: brave.clone(),
+            window_handle: 1,
+        },
+        metadata: EventMetadata {
+            window_title: Some(brave.title.clone()),
+            executable_path: Some(brave.file_path.clone()),
+            url: Some("https://www.youtube.com/watch?v=abc111".into()),
+            ..Default::default()
+        },
+    })
+    .await;
+    h.handle(Event {
+        timestamp: Timestamp::now(),
+        data: EventData::UiAction {
+            kind: intime_core::models::UiActionKind::PlayMedia,
+            fingerprint: blake3::hash(b"mpris\x1fbrave"),
+            window_handle: 9,
+            label: Some("Video".into()),
+        },
+        metadata: EventMetadata {
+            window_title: Some("Video - YouTube".into()),
+            url: Some("https://www.youtube.com/watch?v=abc111".into()),
+            focused_control_type: Some("mpris".into()),
+            automation_id: Some("brave".into()),
+            ..Default::default()
+        },
+    })
+    .await;
+
+    h.handle(Event {
+        timestamp: Timestamp::now(),
+        data: EventData::AppSeen {
+            fingerprint: game_fp,
+            details: game.clone(),
+            window_handle: 2,
+        },
+        metadata: EventMetadata {
+            window_title: Some(game.title.clone()),
+            executable_path: Some(game.file_path.clone()),
+            ..Default::default()
+        },
+    })
+    .await;
+    for _ in 0..3 {
+        h.handle(Event {
+            timestamp: Timestamp::now(),
+            data: EventData::WindowFocus {
+                fingerprint: game_fp,
+                window_handle: 2,
+            },
+            metadata: EventMetadata {
+                window_title: Some("Tiny Glade".into()),
+                executable_path: Some(game.file_path.clone()),
+                ..Default::default()
+            },
+        })
+        .await;
+    }
+
+    let open: Vec<(Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT intent, context_key FROM session WHERE ended_at IS NULL ORDER BY id",
+    )
+    .fetch_all(&h.db.pool)
+    .await
+    .unwrap();
+
+    assert!(
+        open.iter()
+            .any(|(_, k)| k.as_deref() == Some("media:yt:abc111")),
+        "YouTube should stay open while gaming: {open:?}"
+    );
+    assert!(
+        open.iter()
+            .any(|(_, k)| k.as_deref() == Some("game:tiny glade")),
+        "Tiny Glade should be open too: {open:?}"
+    );
+}

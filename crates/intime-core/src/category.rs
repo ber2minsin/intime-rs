@@ -238,10 +238,7 @@ pub fn context_key_with_workspace(
         return media_context_key(document, media_title);
     }
     if is_social_category(category_slug) {
-        if let Some(site) = social_site_key(document.or(media_title)) {
-            return format!("social:{site}");
-        }
-        return format!("social:{category_slug}");
+        return social_context_key(document, media_title);
     }
 
     // Repo / design / project keys win over raw document paths.
@@ -289,6 +286,10 @@ pub fn project_context_key(
         }
         // Editor title "file — workspace — Cursor" without enriched workspace.
         if let Some(ws) = workspace_from_editor_title(title) {
+            return Some(format!("ws:{}", normalize_key(&ws)));
+        }
+        // Terminal/nvim titles: "nvim ~/D/w/r/intime-rs" or "cargo run … ~/…/intime-rs".
+        if let Some(ws) = workspace_from_path_in_title(title) {
             return Some(format!("ws:{}", normalize_key(&ws)));
         }
     }
@@ -439,6 +440,121 @@ fn workspace_from_editor_title(title: Option<&str>) -> Option<String> {
     None
 }
 
+/// Pull a workspace folder name from terminal/editor titles that embed a path.
+///
+/// Examples: `nvim ~/D/w/r/intime-rs`, `nvim . ~/proj/foo`, `cargo run -p x ~/proj/foo`.
+fn workspace_from_path_in_title(title: Option<&str>) -> Option<String> {
+    let t = title?.trim();
+    if t.is_empty() {
+        return None;
+    }
+    let lower = t.to_ascii_lowercase();
+    // Prefer titles that look like an editor/shell in a project dir.
+    let looks_coding = lower.contains("nvim")
+        || lower.contains("vim")
+        || lower.contains("cargo ")
+        || lower.contains("make ")
+        || lower.starts_with('~')
+        || lower.contains(" ~/")
+        || lower.contains(" /home/")
+        || lower.contains(" /users/");
+    if !looks_coding {
+        return None;
+    }
+    let mut best: Option<&str> = None;
+    for token in t.split_whitespace() {
+        let tok = token.trim_matches(|c: char| c == ',' || c == ';' || c == ')');
+        if !(tok.starts_with('~') || tok.starts_with('/')) {
+            continue;
+        }
+        if tok.len() < 2 {
+            continue;
+        }
+        best = Some(tok);
+    }
+    let path = best?;
+    let name = path
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()?
+        .trim();
+    if name.is_empty() || name == "~" || name == "." || name == ".." {
+        return None;
+    }
+    // Avoid treating home dir itself as the workspace.
+    if matches!(name, "home" | "Users" | "users") {
+        return None;
+    }
+    Some(name.to_string())
+}
+
+/// Prefer official streaming over generic local when MPRIS + browser tab collide.
+pub fn prefer_media_category_slug(prev: &str, new: &str) -> String {
+    const RANK: &[(&str, u8)] = &[
+        ("media_streaming_official", 5),
+        ("media_streaming_unofficial", 4),
+        ("live_streaming", 4),
+        ("media_watching", 3),
+        ("music_listening", 3),
+        ("media_local", 1),
+    ];
+    let rank = |s: &str| RANK.iter().find(|(n, _)| *n == s).map(|(_, r)| *r).unwrap_or(0);
+    if rank(new) >= rank(prev) {
+        new.to_string()
+    } else {
+        prev.to_string()
+    }
+}
+
+/// Prefer URL-id / strong title keys when refining an open media session.
+pub fn prefer_media_context_key(prev: &str, new: &str) -> String {
+    if prev == new {
+        return prev.to_string();
+    }
+    let score = |k: &str| -> u8 {
+        if k.starts_with("media:yt:") || k.starts_with("media:nf:") {
+            4
+        } else if is_strong_media_context_key(k) {
+            3
+        } else if k.starts_with("media:url:") {
+            2
+        } else if k.starts_with("media:weak:") {
+            1
+        } else if k.starts_with("media:") {
+            3
+        } else {
+            0
+        }
+    };
+    if score(new) > score(prev) {
+        new.to_string()
+    } else {
+        prev.to_string()
+    }
+}
+
+/// Whether a media session should continue instead of splitting on category/key churn.
+pub fn should_continue_media_session(
+    prev_key: &str,
+    new_key: &str,
+    prev_title: Option<&str>,
+    new_title: Option<&str>,
+) -> bool {
+    if prev_key == new_key {
+        return true;
+    }
+    if media_context_equivalent(prev_key, new_key, prev_title, new_title) {
+        return true;
+    }
+    // Browse chrome → concrete show/id for the same site.
+    let prev_weak = prev_key.starts_with("media:weak:");
+    let new_strong = is_strong_media_context_key(new_key) || new_key.starts_with("media:yt:") || new_key.starts_with("media:nf:");
+    if prev_weak && new_strong {
+        return true;
+    }
+    false
+}
+
 /// One-line session summary for closed rows (LLM / UI friendly).
 pub fn session_summary_line(
     category_slug: &str,
@@ -583,11 +699,13 @@ pub fn is_weak_media_title(normalized: &str) -> bool {
             | "youtube music"
             | "media"
             | "unknown"
+            | "stopped"
     ) || normalized.starts_with("home - ")
         && matches!(
             normalized.strip_prefix("home - ").unwrap_or(""),
             "netflix" | "youtube" | "prime video" | "hulu" | "disney+" | "disney plus"
         )
+        || normalized.ends_with(": stopped")
 }
 
 /// Prefer URL-id keys (`media:yt:…` / `media:nf:…`) over title keys for reopen.
@@ -681,7 +799,6 @@ fn social_site_key(hint: Option<&str>) -> Option<String> {
         return Some("youtube.com".into());
     }
     if h.starts_with("http://") || h.starts_with("https://") {
-        // host only
         let rest = h.split("://").nth(1)?;
         let host = rest.split('/').next()?.trim();
         if !host.is_empty() {
@@ -689,6 +806,137 @@ fn social_site_key(hint: Option<&str>) -> Option<String> {
         }
     }
     None
+}
+
+/// Social identity: status id > concrete post title > bare site feed.
+fn social_context_key(document: Option<&str>, title: Option<&str>) -> String {
+    let site = social_site_key(document.or(title)).unwrap_or_else(|| "unknown".into());
+    if let Some(id) = parse_x_status_id(document) {
+        return format!("social:{site}:status:{id}");
+    }
+    if let Some(t) = title.map(normalize_media_title).filter(|t| !t.is_empty()) {
+        if !is_weak_social_title(&t) {
+            let short = if t.chars().count() > 72 {
+                let s: String = t.chars().take(69).collect();
+                format!("{s}…")
+            } else {
+                t
+            };
+            return format!("social:{site}:{short}");
+        }
+    }
+    format!("social:{site}")
+}
+
+fn parse_x_status_id(url: Option<&str>) -> Option<String> {
+    let raw = url?.trim();
+    let lower = raw.to_ascii_lowercase();
+    for marker in ["/status/", "/statuses/"] {
+        if let Some(idx) = lower.find(marker) {
+            let start = idx + marker.len();
+            let id = extract_id_at(raw, start)?;
+            if id.chars().all(|c| c.is_ascii_digit()) && id.len() >= 6 {
+                return Some(id);
+            }
+        }
+    }
+    None
+}
+
+/// Feed chrome titles that must not replace a concrete post/article title.
+pub fn is_weak_social_title(normalized: &str) -> bool {
+    matches!(
+        normalized,
+        "x"
+            | "twitter"
+            | "home / x"
+            | "home"
+            | "explore / x"
+            | "explore"
+            | "notifications / x"
+            | "notifications"
+            | "messages / x"
+            | "messages"
+            | "grok / x"
+            | "bookmarks / x"
+            | "bookmarks"
+            | "instagram"
+            | "linkedin"
+            | "reddit"
+            | "facebook"
+            | "tiktok"
+    ) || normalized.ends_with(" / x")
+        && matches!(
+            normalized.strip_suffix(" / x").unwrap_or(""),
+            "home" | "explore" | "notifications" | "messages" | "bookmarks" | "grok" | "search"
+        )
+}
+
+/// Prefer a concrete title over browser/site chrome when refining sessions.
+pub fn prefer_session_title(prev: Option<&str>, new: Option<&str>) -> Option<String> {
+    let new = new.map(str::trim).filter(|s| !s.is_empty())?;
+    let Some(prev) = prev.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Some(new.to_string());
+    };
+    let prev_n = normalize_media_title(prev);
+    let new_n = normalize_media_title(new);
+    let prev_weak = is_weak_media_title(&prev_n) || is_weak_social_title(&prev_n);
+    let new_weak = is_weak_media_title(&new_n) || is_weak_social_title(&new_n);
+    if new_weak && !prev_weak {
+        return Some(prev.to_string());
+    }
+    if prev_weak && !new_weak {
+        return Some(new.to_string());
+    }
+    // Prefer the richer (usually longer) concrete title.
+    if new_n.len() >= prev_n.len() {
+        Some(new.to_string())
+    } else {
+        Some(prev.to_string())
+    }
+}
+
+/// Context keys / titles that must never open a session (player chrome, noise).
+pub fn is_noise_session_identity(context_key: &str, title: Option<&str>) -> bool {
+    if context_key.starts_with("media:weak:")
+        || context_key == "media:unknown"
+        || context_key.starts_with("media:url:")
+    {
+        return true;
+    }
+    if let Some(rest) = context_key.strip_prefix("media:") {
+        if is_weak_media_title(rest) || rest.ends_with(": stopped") {
+            return true;
+        }
+    }
+    if let Some(t) = title {
+        let n = normalize_media_title(t);
+        if is_weak_media_title(&n) || n.ends_with(": stopped") {
+            return true;
+        }
+    }
+    false
+}
+
+/// Context keys that identify concrete content (promote after one meaningful event).
+pub fn is_concrete_content_key(key: &str) -> bool {
+    if key.starts_with("media:yt:") || key.starts_with("media:nf:") {
+        return true;
+    }
+    if key.starts_with("media:weak:") || key == "media:unknown" || key.starts_with("media:url:") {
+        return false;
+    }
+    if key.starts_with("media:") {
+        return is_strong_media_context_key(key);
+    }
+    if let Some(rest) = key.strip_prefix("social:") {
+        // social:x.com:status:… or social:x.com:post title — not bare social:x.com
+        return rest.contains(':');
+    }
+    key.starts_with("ws:")
+        || key.starts_with("repo:")
+        || key.starts_with("figma:")
+        || key.starts_with("game:")
 }
 
 fn normalize_key(s: &str) -> String {
@@ -903,6 +1151,32 @@ mod tests {
             ),
             "social:x.com"
         );
+        assert!(
+            context_key(
+                "social_long",
+                Some(1),
+                None,
+                Some("Hunter Biden Announces $LAPTOP Memecoin Launch on September 9 / X - Brave")
+            )
+            .starts_with("social:x.com:hunter biden")
+        );
+        assert_eq!(
+            context_key(
+                "social_long",
+                None,
+                Some("https://x.com/user/status/1234567890123456789"),
+                Some("Some post / X")
+            ),
+            "social:x.com:status:1234567890123456789"
+        );
+        assert_eq!(
+            prefer_session_title(Some("Community - Netflix - Brave"), Some("Netflix - Brave")),
+            Some("Community - Netflix - Brave".into())
+        );
+        assert!(is_concrete_content_key("media:community"));
+        assert!(!is_concrete_content_key("media:weak:netflix"));
+        assert!(is_concrete_content_key("social:x.com:hunter biden announces"));
+        assert!(!is_concrete_content_key("social:x.com"));
     }
 
     #[test]
@@ -1031,6 +1305,60 @@ mod tests {
                 .starts_with("app:")
                 || context_key_with_workspace("gaming", Some(1), None, Some("Steam"), None)
                     .starts_with("cat:")
+        );
+    }
+
+    #[test]
+    fn nvim_terminal_title_yields_workspace_key() {
+        assert_eq!(
+            context_key_with_workspace(
+                "terminal",
+                Some(1),
+                None,
+                Some("nvim ~/D/w/r/intime-rs"),
+                None,
+            ),
+            "ws:intime-rs"
+        );
+        assert_eq!(
+            context_key_with_workspace(
+                "code_editing",
+                Some(1),
+                None,
+                Some("nvim . ~/Documents/workspace/rust/intime-rs"),
+                None,
+            ),
+            "ws:intime-rs"
+        );
+    }
+
+    #[test]
+    fn media_session_continues_across_weak_and_local_streaming() {
+        assert!(should_continue_media_session(
+            "media:weak:netflix",
+            "media:nf:70251221",
+            Some("Netflix - Brave"),
+            Some("Community - Netflix - Brave"),
+        ));
+        assert!(should_continue_media_session(
+            "media:example track title",
+            "media:yt:exampleVideoId",
+            Some("Example Track Title"),
+            Some("(1) Example Track Title - YouTube - Brave"),
+        ));
+        assert!(!should_continue_media_session(
+            "media:friends",
+            "media:community",
+            Some("Friends - Netflix"),
+            Some("Community - Netflix"),
+        ));
+        assert_eq!(
+            prefer_media_category_slug("media_local", "media_streaming_official"),
+            "media_streaming_official"
+        );
+        assert_eq!(
+            prefer_media_context_key("media:weak:netflix", "media:nf:1"),
+            "media:nf:1"
         );
     }
 }
